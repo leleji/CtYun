@@ -1,0 +1,68 @@
+name: .NET and Docker
+
+on:
+  push:
+    branches: [ "master" ]
+  pull_request:
+    branches: [ "master" ]
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+
+    steps:
+    # 检出代码 
+    - uses: actions/checkout@v4
+
+    # 设置 .NET 环境
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: 8.0.x
+
+    # 确定版本号  
+    - name: Read project version
+      id: get-version
+      run: |
+        version=$(grep -oP '(?<=<FileVersion>).*?(?=</FileVersion>)' CtYun/CtYun.csproj)
+        if [ -z "$version" ]; then
+          echo "Error: Unable to read version from CtYun.csproj"
+          exit 1
+        fi
+        echo "version=$version" >> $GITHUB_ENV
+        echo "Version: $version"
+    # 恢复依赖
+    - name: Restore dependencies
+      run: dotnet restore
+
+    # 构建应用程序
+    - name: Build
+      run: dotnet build --no-restore --configuration Release
+
+    # 发布应用程序
+    - name: Publish Application
+      run: dotnet publish CtYun/CtYun.csproj -c Release -p:PublishAot=false -o publish
+
+    # 登录 Docker Hub
+    - name: Log in to Docker Hub
+      uses: docker/login-action@v2
+      with:
+        username: ${{ secrets.DOCKER_USERNAME }}
+        password: ${{ secrets.DOCKER_PASSWORD }}
+
+    # 设置 Buildx
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v2
+      with:
+        driver: docker-container
+
+    # 构建和推送多架构 Docker 镜像
+    - name: Build and Push Multi-Arch Docker Image
+      run: |
+        docker buildx build \
+          --no-cache \
+          --platform linux/amd64,linux/arm64 \
+          -t ${{ secrets.DOCKER_USERNAME }}/ctyun:${{ env.version }} \
+          -t ${{ secrets.DOCKER_USERNAME }}/ctyun:latest \
+          -f ./CtYun/Dockerfile \
+          --push .
