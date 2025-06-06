@@ -4,21 +4,28 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 
-
+Console.WriteLine("1.0.3");
 var connectText = "";
+
+var t = new LoginInfo()
+{
+    DeviceType = "60",
+    DeviceCode = $"web_{GenerateRandomString(32)}",
+    Version = "1020700001"
+};
+
 if (File.Exists("connect.txt"))
 {
     connectText = File.ReadAllText("connect.txt");
 }
 if (string.IsNullOrEmpty(connectText))
 {
-    string user, pass;
     if (IsRunningInContainer())
     {
         // Docker/Linux 环境：使用环境变量
-        user = Environment.GetEnvironmentVariable("APP_USER");
-        pass = Environment.GetEnvironmentVariable("APP_PASSWORD");
-        if (string.IsNullOrEmpty(user) || string.IsNullOrEmpty(pass))
+        t.UserPhone = Environment.GetEnvironmentVariable("APP_USER");
+        t.Password = ComputeSha256Hash(Environment.GetEnvironmentVariable("APP_PASSWORD"));
+        if (string.IsNullOrEmpty(t.UserPhone) || string.IsNullOrEmpty(t.Password))
         {
             Console.WriteLine("错误：必须设置环境变量 APP_USER 和 APP_PASSWORD");
             return;
@@ -28,19 +35,11 @@ if (string.IsNullOrEmpty(connectText))
     {
         // Windows 环境：交互式输入
         Console.Write("请输入账号：");
-        user = Console.ReadLine();
+        t.UserPhone = Console.ReadLine();
 
         Console.Write("请输入密码：");
-        pass = ReadPassword(); // 隐藏密码输入
+        t.Password = ComputeSha256Hash(ReadPassword()); // 隐藏密码输入
     }
-    var t = new LoginInfo()
-    {
-        UserPhone = user,
-        Password = ComputeSha256Hash(pass),
-        DeviceType = "60",
-        DeviceCode = $"web_{GenerateRandomString(32)}",
-        Version = "1020700001"
-    };
     //重试三次
     for (int i = 0; i < 3; i++)
     {
@@ -50,6 +49,7 @@ if (string.IsNullOrEmpty(connectText))
         {
             continue;
         }
+        t.DesktopId= await cyApi.GetLlientListAsync();
         connectText = await cyApi.ConnectAsync();
         File.WriteAllText("connect.txt", connectText);
     }
@@ -61,24 +61,22 @@ if (string.IsNullOrEmpty(connectText))
 }
 Console.WriteLine("connect信息：" + connectText);
 byte[] message=null;
-var desktopId = "";
 var wssHost = "";
 try
 {
-    var person = JsonSerializer.Deserialize(connectText, AppJsonSerializerContext.Default.ConnectInfo);
+    var connectJson = JsonSerializer.Deserialize(connectText, AppJsonSerializerContext.Default.ConnectInfo);
     var connectMessage = new ConnecMessage
     {
         type = 1,
         ssl = 1,
-        host = person.data.desktopInfo.clinkLvsOutHost.Split(":")[0],
-        port = person.data.desktopInfo.clinkLvsOutHost.Split(":")[1],
-        ca = person.data.desktopInfo.caCert,
-        cert = person.data.desktopInfo.clientCert,
-        key = person.data.desktopInfo.clientKey,
-        servername = $"{person.data.desktopInfo.host}:{person.data.desktopInfo.port}"
+        host = connectJson.data.desktopInfo.clinkLvsOutHost.Split(":")[0],
+        port = connectJson.data.desktopInfo.clinkLvsOutHost.Split(":")[1],
+        ca = connectJson.data.desktopInfo.caCert,
+        cert = connectJson.data.desktopInfo.clientCert,
+        key = connectJson.data.desktopInfo.clientKey,
+        servername = $"{connectJson.data.desktopInfo.host}:{connectJson.data.desktopInfo.port}"
     };
-    wssHost = person.data.desktopInfo.clinkLvsOutHost;
-    desktopId = person.data.desktopInfo.desktopId.ToString();
+    wssHost = connectJson.data.desktopInfo.clinkLvsOutHost;
     message = JsonSerializer.SerializeToUtf8Bytes(connectMessage, AppJsonSerializerContext.Default.ConnecMessage);
 
 }
@@ -90,7 +88,7 @@ catch (Exception ex)
 while (true)
 {
 
-    var uri = new Uri($"wss://{wssHost}/clinkProxy/{desktopId}/MAIN");
+    var uri = new Uri($"wss://{wssHost}/clinkProxy/{t.DesktopId}/MAIN");
     using var client = new ClientWebSocket();
     // 添加 Header
     client.Options.SetRequestHeader("Origin", "https://pc.ctyun.cn");
@@ -114,6 +112,7 @@ while (true)
         await client.SendAsync(Convert.FromBase64String("UkVEUQIAAAACAAAAGgAAAAAAAAABAAEAAAABAAAAEgAAAAkAAAAECAAA"), WebSocketMessageType.Binary, true, CancellationToken.None);
 
         await Task.Delay(TimeSpan.FromMinutes(5));
+        await client.CloseAsync(WebSocketCloseStatus.NormalClosure, "Closing", CancellationToken.None);
     }
     catch (Exception ex)
     {

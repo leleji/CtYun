@@ -98,7 +98,20 @@ namespace CtYun
             response.EnsureSuccessStatusCode();
             return await response.Content.ReadAsStringAsync();
         }
-
+        private async Task<string> GetEncryptionAsync(string url)
+        {
+            var timestamp = DateTimeOffset.Now.ToUnixTimeMilliseconds().ToString();
+            var request = new HttpRequestMessage(HttpMethod.Get, url);
+            request.Headers.Add("ctg-userid", loginInfo.UserId.ToString());
+            request.Headers.Add("ctg-tenantid", loginInfo.TenantId.ToString());
+            request.Headers.Add("ctg-timestamp", timestamp);
+            request.Headers.Add("ctg-requestid", timestamp);
+            var str = $"{loginInfo.DeviceType}{timestamp}{loginInfo.TenantId}{timestamp}{loginInfo.UserId}{loginInfo.Version}{loginInfo.SecretKey}";
+            request.Headers.Add("ctg-signaturestr", ComputeMD5(str));
+            var response = await client.SendAsync(request);
+            response.EnsureSuccessStatusCode();
+            return await response.Content.ReadAsStringAsync();
+        }
 
         private async Task<string> GetCaptcha()
         {
@@ -129,13 +142,26 @@ namespace CtYun
         }
 
 
-
+        public async Task<string> GetLlientListAsync()
+        {
+            try
+            {
+                var result = await GetEncryptionAsync("https://desk.ctyun.cn:8810/api/desktop/client/list");
+                var resultJson = JsonSerializer.Deserialize(result, AppJsonSerializerContext.Default.ClientInfo);
+                return resultJson.data.desktopList[0].desktopId;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("获取设备信息错误。"+ex.Message);
+                return null; 
+            }
+        }
 
         public async Task<string> ConnectAsync()
         {
             var collection = new List<KeyValuePair<string, string>>
             {
-                new("objId", "20981026"),
+                new("objId",loginInfo.DesktopId),
                 new("objType", "0"),
                 new("osType", "15"),
                 new("deviceId", "60"),
