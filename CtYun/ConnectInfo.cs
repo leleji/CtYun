@@ -21,6 +21,8 @@ namespace CtYun
         public string caCert { get; set; }
         public string clientCert { get; set; }
         public string clientKey { get; set; }
+
+        public int desktopId { get; set; }
     }
     public class ConnecMessage
     {

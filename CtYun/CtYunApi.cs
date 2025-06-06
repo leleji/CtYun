@@ -104,7 +104,7 @@ namespace CtYun
         {
             try
             {
-                var img = await client.GetByteArrayAsync("https://desk.ctyun.cn:8810/api/auth/client/captcha?height=36&width=85&userInfo=15384802624&mode=auto&_t=1749139280909");
+                var img = await client.GetByteArrayAsync($"https://desk.ctyun.cn:8810/api/auth/client/captcha?height=36&width=85&userInfo={loginInfo.UserPhone}&mode=auto&_t=1749139280909");
                 var cdfs = Convert.ToBase64String(img);
                 var request = new HttpRequestMessage(HttpMethod.Post, crcUrl);
                 var content = new MultipartFormDataContent

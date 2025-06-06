@@ -33,18 +33,18 @@ if (string.IsNullOrEmpty(connectText))
         Console.Write("请输入密码：");
         pass = ReadPassword(); // 隐藏密码输入
     }
+    var t = new LoginInfo()
+    {
+        UserPhone = user,
+        Password = ComputeSha256Hash(pass),
+        DeviceType = "60",
+        DeviceCode = $"web_{GenerateRandomString(32)}",
+        Version = "1020700001"
+    };
     //重试三次
     for (int i = 0; i < 3; i++)
     {
 
-        var t = new LoginInfo()
-        {
-            UserPhone = user,
-            Password = ComputeSha256Hash(pass),
-            DeviceType = "60",
-            DeviceCode = $"web_{GenerateRandomString(32)}",
-            Version = "1020700001"
-        };
         var cyApi = new CtYunApi(t);
         if (!await cyApi.LoginAsync())
         {
@@ -61,6 +61,7 @@ if (string.IsNullOrEmpty(connectText))
 }
 Console.WriteLine("connect信息：" + connectText);
 byte[] message=null;
+var desktopId = "";
 try
 {
     var person = JsonSerializer.Deserialize(connectText, AppJsonSerializerContext.Default.ConnectInfo);
@@ -75,6 +76,7 @@ try
         key = person.data.desktopInfo.clientKey,
         servername = $"{person.data.desktopInfo.host}:{person.data.desktopInfo.port}"
     };
+    desktopId= person.data.desktopInfo.desktopId.ToString();
     message = JsonSerializer.SerializeToUtf8Bytes(connectMessage, AppJsonSerializerContext.Default.ConnecMessage);
 
 }
@@ -86,7 +88,7 @@ catch (Exception ex)
 while (true)
 {
 
-    var uri = new Uri("wss://nm6b2-deskmgr.ctyun.cn:9011/clinkProxy/20981026/MAIN");
+    var uri = new Uri($"wss://nm6b2-deskmgr.ctyun.cn:9011/clinkProxy/{desktopId}/MAIN");
     using var client = new ClientWebSocket();
     // 添加 Header
     client.Options.SetRequestHeader("Origin", "https://pc.ctyun.cn");
@@ -109,7 +111,7 @@ while (true)
         await Task.Delay(500);
         await client.SendAsync(Convert.FromBase64String("UkVEUQIAAAACAAAAGgAAAAAAAAABAAEAAAABAAAAEgAAAAkAAAAECAAA"), WebSocketMessageType.Binary, true, CancellationToken.None);
 
-        await Task.Delay(100000);
+        await Task.Delay(TimeSpan.FromMinutes(5));
     }
     catch (Exception ex)
     {
