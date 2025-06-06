@@ -6,7 +6,7 @@
 		<ImplicitUsings>enable</ImplicitUsings>
 		<Nullable>disable</Nullable>
 		<PublishAot>true</PublishAot>
-		<FileVersion>1.0.0</FileVersion>
+		<FileVersion>1.0.1</FileVersion>
 	</PropertyGroup>
 
 </Project>

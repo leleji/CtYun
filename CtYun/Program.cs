@@ -144,8 +144,7 @@ while (true)
                         var data = e.Execute(extracted);
                         Console.WriteLine("发送保活消息.");
                         await client.SendAsync(data, WebSocketMessageType.Binary, true, CancellationToken.None);
-
-
+                        Console.WriteLine("发送保活消息成功。");
                     }
                     else {
                         if (hex.IndexOf("00000000") ==-1)
