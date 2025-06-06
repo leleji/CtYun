@@ -62,6 +62,7 @@ if (string.IsNullOrEmpty(connectText))
 Console.WriteLine("connect信息：" + connectText);
 byte[] message=null;
 var desktopId = "";
+var wssHost = "";
 try
 {
     var person = JsonSerializer.Deserialize(connectText, AppJsonSerializerContext.Default.ConnectInfo);
@@ -76,7 +77,8 @@ try
         key = person.data.desktopInfo.clientKey,
         servername = $"{person.data.desktopInfo.host}:{person.data.desktopInfo.port}"
     };
-    desktopId= person.data.desktopInfo.desktopId.ToString();
+    wssHost = person.data.desktopInfo.clinkLvsOutHost;
+    desktopId = person.data.desktopInfo.desktopId.ToString();
     message = JsonSerializer.SerializeToUtf8Bytes(connectMessage, AppJsonSerializerContext.Default.ConnecMessage);
 
 }
@@ -88,7 +90,7 @@ catch (Exception ex)
 while (true)
 {
 
-    var uri = new Uri($"wss://nm6b2-deskmgr.ctyun.cn:9011/clinkProxy/{desktopId}/MAIN");
+    var uri = new Uri($"wss://{wssHost}/clinkProxy/{desktopId}/MAIN");
     using var client = new ClientWebSocket();
     // 添加 Header
     client.Options.SetRequestHeader("Origin", "https://pc.ctyun.cn");
