@@ -18,7 +18,7 @@ if (File.Exists("connect.txt"))
 {
     connectText = File.ReadAllText("connect.txt");
 }
-if (string.IsNullOrEmpty(connectText))
+if (string.IsNullOrEmpty(connectText)|| connectText.IndexOf("\"desktopInfo\":null") !=-1)
 {
     if (IsRunningInContainer())
     {
@@ -53,9 +53,9 @@ if (string.IsNullOrEmpty(connectText))
         connectText = await cyApi.ConnectAsync();
         File.WriteAllText("connect.txt", connectText);
     }
-    if (string.IsNullOrEmpty(connectText))
+    if (string.IsNullOrEmpty(connectText) ||connectText.IndexOf("\"desktopInfo\":null") != -1)
     {
-        Console.WriteLine("登录异常..");
+        Console.WriteLine("登录异常..connectText获取错误，检查电脑是否开机。");
         return;
     }
 }
@@ -76,6 +76,7 @@ try
         key = connectJson.data.desktopInfo.clientKey,
         servername = $"{connectJson.data.desktopInfo.host}:{connectJson.data.desktopInfo.port}"
     };
+    t.DesktopId= connectJson.data.desktopInfo.desktopId.ToString();
     wssHost = connectJson.data.desktopInfo.clinkLvsOutHost;
     message = JsonSerializer.SerializeToUtf8Bytes(connectMessage, AppJsonSerializerContext.Default.ConnecMessage);
 
@@ -111,7 +112,7 @@ while (true)
         await Task.Delay(500);
         await client.SendAsync(Convert.FromBase64String("UkVEUQIAAAACAAAAGgAAAAAAAAABAAEAAAABAAAAEgAAAAkAAAAECAAA"), WebSocketMessageType.Binary, true, CancellationToken.None);
 
-        await Task.Delay(TimeSpan.FromMinutes(5));
+        await Task.Delay(TimeSpan.FromMinutes(1));
         await client.CloseAsync(WebSocketCloseStatus.NormalClosure, "Closing", CancellationToken.None);
     }
     catch (Exception ex)
