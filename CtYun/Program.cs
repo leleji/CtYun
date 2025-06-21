@@ -1,10 +1,12 @@
 ﻿using CtYun;
 using System.Net.WebSockets;
+using System.Reflection;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 
-Console.WriteLine("1.0.3");
+
+Console.WriteLine($"v {Assembly.GetEntryAssembly().GetName().Version}");
 var connectText = "";
 
 var t = new LoginInfo()
@@ -47,6 +49,7 @@ if (string.IsNullOrEmpty(connectText)|| connectText.IndexOf("\"desktopInfo\":nul
         var cyApi = new CtYunApi(t);
         if (!await cyApi.LoginAsync())
         {
+            Console.Write($"重试第{i+1}次。");
             continue;
         }
         t.DesktopId= await cyApi.GetLlientListAsync();
@@ -86,6 +89,7 @@ catch (Exception ex)
     Console.WriteLine("connect数据校验错误"+ ex.Message);
     return;
 }
+Console.WriteLine("日志如果显示[发送保活消息成功。]才算成功。");
 while (true)
 {
 
@@ -113,6 +117,7 @@ while (true)
         await client.SendAsync(Convert.FromBase64String("UkVEUQIAAAACAAAAGgAAAAAAAAABAAEAAAABAAAAEgAAAAkAAAAECAAA"), WebSocketMessageType.Binary, true, CancellationToken.None);
 
         await Task.Delay(TimeSpan.FromMinutes(1));
+        Console.WriteLine("准备关闭连接重新发送保活信息.");
         await client.CloseAsync(WebSocketCloseStatus.NormalClosure, "Closing", CancellationToken.None);
     }
     catch (Exception ex)
@@ -163,7 +168,11 @@ while (true)
         }
         catch (Exception ex)
         {
-            Console.WriteLine("Error receiving message: " + ex.Message);
+            if (!ex.Message.Contains("The WebSocket is in an invalid state ('Closed')"))
+            {
+                Console.WriteLine("Error receiving message: " + ex.Message);
+            }
+
         }
     }
 

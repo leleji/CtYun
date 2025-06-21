@@ -117,6 +117,7 @@ namespace CtYun
         {
             try
             {
+                Console.WriteLine("正在识别验证码.");
                 var img = await client.GetByteArrayAsync($"https://desk.ctyun.cn:8810/api/auth/client/captcha?height=36&width=85&userInfo={loginInfo.UserPhone}&mode=auto&_t=1749139280909");
                 var cdfs = Convert.ToBase64String(img);
                 var request = new HttpRequestMessage(HttpMethod.Post, crcUrl);
@@ -128,6 +129,7 @@ namespace CtYun
                 var response = await client.SendAsync(request);
                 response.EnsureSuccessStatusCode();
                 var result = await response.Content.ReadAsStringAsync();
+                Console.WriteLine($"识别结果：{result}");
                 var doc = JsonDocument.Parse(result);
                 var root = doc.RootElement;
                 return root.GetProperty("data").GetString();
