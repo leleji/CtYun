@@ -55,6 +55,7 @@ if (string.IsNullOrEmpty(connectText)|| connectText.IndexOf("\"desktopInfo\":nul
         t.DesktopId= await cyApi.GetLlientListAsync();
         connectText = await cyApi.ConnectAsync();
         File.WriteAllText("connect.txt", connectText);
+        break;
     }
     if (string.IsNullOrEmpty(connectText) ||connectText.IndexOf("\"desktopInfo\":null") != -1)
     {

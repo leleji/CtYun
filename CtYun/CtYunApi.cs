@@ -71,6 +71,7 @@ namespace CtYun
                 {
                     loginInfo.TenantId = tenantIdElement.GetInt32();
                 }
+                Console.WriteLine("登录成功.");
                 return true;
             }
             else
