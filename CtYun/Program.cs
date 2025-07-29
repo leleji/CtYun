@@ -15,8 +15,7 @@ var t = new LoginInfo()
     DeviceCode = $"web_{GenerateRandomString(32)}",
     Version = "1020700001"
 };
-
-if (File.Exists("connect.txt"))
+if (File.Exists("connect.txt")&& Environment.GetEnvironmentVariable("LOAD_CACHE") =="1")
 {
     connectText = File.ReadAllText("connect.txt");
 }
@@ -93,7 +92,6 @@ catch (Exception ex)
 Console.WriteLine("日志如果显示[发送保活消息成功。]才算成功。");
 while (true)
 {
-
     var uri = new Uri($"wss://{wssHost}/clinkProxy/{t.DesktopId}/MAIN");
     using var client = new ClientWebSocket();
     // 添加 Header
@@ -169,10 +167,7 @@ while (true)
         }
         catch (Exception ex)
         {
-            if (!ex.Message.Contains("The WebSocket is in an invalid state ('Closed')"))
-            {
-                Console.WriteLine("Error receiving message: " + ex.Message);
-            }
+           
 
         }
     }
