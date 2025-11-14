@@ -12,7 +12,7 @@ namespace CtYun
     internal class CtYunApi
     {
 
-        private readonly string crcUrl = "https://orc.xiaoleji.pro/ocr";
+        private readonly string crcUrl = "https://orc.1999111.xyz/ocr";
 
         private readonly HttpClient client;
         private readonly LoginInfo loginInfo;
