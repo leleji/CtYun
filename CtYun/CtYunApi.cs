@@ -1,10 +1,13 @@
-﻿using System;
+﻿using CtYun.Models;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Net.Http;
+using System.Net.Http.Json;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization.Metadata;
 using System.Threading.Tasks;
 
 namespace CtYun
@@ -12,199 +15,278 @@ namespace CtYun
     internal class CtYunApi
     {
 
-        private readonly string crcUrl = "https://orc.1999111.xyz/ocr";
+        private const string orcUrl = "https://orc.1999111.xyz/ocr";
+
+        private const string version = "103020001";
+
+        private const string deviceType = "60";
+
+        private readonly string deviceCode = File.ReadAllText("DeviceCode.txt");
 
         private readonly HttpClient client;
-        private readonly LoginInfo loginInfo;
 
-        public CtYunApi(LoginInfo loginInfo)
+        public LoginInfo LoginInfo { get; set; }
+        public CtYunApi()
         {
-            this.loginInfo = loginInfo;
-            var handler =new HttpClientHandler();
+            var handler = new HttpClientHandler();
             client = new HttpClient(handler);
             client.DefaultRequestHeaders.Add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36");
-            client.DefaultRequestHeaders.Add("ctg-devicetype", loginInfo.DeviceType);
-            client.DefaultRequestHeaders.Add("ctg-version", loginInfo.Version);
-            client.DefaultRequestHeaders.Add("ctg-devicecode", loginInfo.DeviceCode);
+            client.DefaultRequestHeaders.Add("ctg-devicetype", deviceType);
+            client.DefaultRequestHeaders.Add("ctg-version", version);
+            client.DefaultRequestHeaders.Add("ctg-devicecode", deviceCode);
             client.DefaultRequestHeaders.Add("referer", "https://pc.ctyun.cn/");
-           
+
         }
 
 
 
-        public async Task<bool> LoginAsync()
+        public async Task<bool> LoginAsync(string userphone, string password)
         {
-            var captchaCode = await GetCaptcha();
-            var request = new HttpRequestMessage(HttpMethod.Post, "https://desk.ctyun.cn:8810/api/auth/client/login");
-            var collection = new List<KeyValuePair<string, string>>
+            for (int i = 1; i < 4; i++)
             {
-                new("userAccount", loginInfo.UserPhone),
-                new("password", loginInfo.Password),
-                new("sha256Password", loginInfo.Password),
-                new("captchaCode", captchaCode)
-            };
-            AddCollection(collection);
-            var content = new FormUrlEncodedContent(collection);
-            request.Content = content;
-            var response = await client.SendAsync(request);
-            response.EnsureSuccessStatusCode();
-            var result= await response.Content.ReadAsStringAsync();
-            var doc = JsonDocument.Parse(result);
-            var root = doc.RootElement;
-            // 获取 data 对象
-            if (root.TryGetProperty("data", out JsonElement dataElement) && dataElement.ValueKind == JsonValueKind.Object)
-            {
-                if (dataElement.TryGetProperty("secretKey", out JsonElement secretKeyElement) && secretKeyElement.ValueKind == JsonValueKind.String)
+                var genChallengeData = await GetGenChallengeDataAsync();
+                if (genChallengeData == null)
                 {
-                    loginInfo.SecretKey = secretKeyElement.GetString();
+                    continue;
                 }
-                if (dataElement.TryGetProperty("userAccount", out JsonElement userAccountElement) && userAccountElement.ValueKind == JsonValueKind.String)
+                var captchaCode = await GetCaptcha(await GetLoginCaptcha(userphone));
+                if (string.IsNullOrEmpty(captchaCode))
                 {
-                    loginInfo.UserAccount = userAccountElement.GetString();
+                    continue;
                 }
-
-                if (dataElement.TryGetProperty("userId", out JsonElement userIdElement) && userIdElement.ValueKind == JsonValueKind.Number)
+                var collection = new List<KeyValuePair<string, string>>
                 {
-                    loginInfo.UserId = userIdElement.GetInt32();
-                }
-                if (dataElement.TryGetProperty("tenantId", out JsonElement tenantIdElement) && tenantIdElement.ValueKind == JsonValueKind.Number)
+                    new("userAccount", userphone),
+                    new ("password", ComputeSha256Hash(password + genChallengeData.ChallengeCode)),
+                    new ("sha256Password", ComputeSha256Hash(ComputeSha256Hash(password) + genChallengeData.ChallengeCode)),
+                    new ("challengeId", genChallengeData.ChallengeId),
+                    new ("captchaCode", captchaCode)
+                };
+                AddCollection(collection);
+                using FormUrlEncodedContent content = new FormUrlEncodedContent(collection);
+                ResultBase<LoginInfo> result = await PostAsync("https://desk.ctyun.cn:8810/api/auth/client/login", content, AppJsonSerializerContext.Default.ResultBaseLoginInfo);
+                if (result.Success)
                 {
-                    loginInfo.TenantId = tenantIdElement.GetInt32();
+                    LoginInfo = result.Data;
+                    return true;
                 }
-                Console.WriteLine("登录成功.");
-                return true;
-            }
-            else
-            {
-                Console.WriteLine(result);
+                Utility.WriteLine(ConsoleColor.Red, $"重试{i}, Login Error:{result.Msg}");
             }
             return false;
         }
 
-
-
-        private async Task<string> PostEncryptionAsync(string url, List<KeyValuePair<string, string>>  collection)
+        public async Task<bool> GetSmsCodeAsync(string userphone)
         {
-            var timestamp = DateTimeOffset.Now.ToUnixTimeMilliseconds().ToString();
-            var request = new HttpRequestMessage(HttpMethod.Post, url);
-            request.Headers.Add("ctg-userid", loginInfo.UserId.ToString());
-            request.Headers.Add("ctg-tenantid", loginInfo.TenantId.ToString());
-            request.Headers.Add("ctg-timestamp", timestamp);
-            request.Headers.Add("ctg-requestid", timestamp);
-            var str = $"{loginInfo.DeviceType}{timestamp}{loginInfo.TenantId}{timestamp}{loginInfo.UserId}{loginInfo.Version}{loginInfo.SecretKey}";
-            request.Headers.Add("ctg-signaturestr", ComputeMD5(str));
-            var content = new FormUrlEncodedContent(collection);
-            request.Content = content;
-            var response = await client.SendAsync(request);
-            response.EnsureSuccessStatusCode();
-            return await response.Content.ReadAsStringAsync();
-        }
-        private async Task<string> GetEncryptionAsync(string url)
-        {
-            var timestamp = DateTimeOffset.Now.ToUnixTimeMilliseconds().ToString();
-            var request = new HttpRequestMessage(HttpMethod.Get, url);
-            request.Headers.Add("ctg-userid", loginInfo.UserId.ToString());
-            request.Headers.Add("ctg-tenantid", loginInfo.TenantId.ToString());
-            request.Headers.Add("ctg-timestamp", timestamp);
-            request.Headers.Add("ctg-requestid", timestamp);
-            var str = $"{loginInfo.DeviceType}{timestamp}{loginInfo.TenantId}{timestamp}{loginInfo.UserId}{loginInfo.Version}{loginInfo.SecretKey}";
-            request.Headers.Add("ctg-signaturestr", ComputeMD5(str));
-            var response = await client.SendAsync(request);
-            response.EnsureSuccessStatusCode();
-            return await response.Content.ReadAsStringAsync();
+            for (int i = 0; i < 3; i++)
+            {
+                var captchaCode = await GetCaptcha(await GetSmsCodeCaptcha());
+                if (!string.IsNullOrEmpty(captchaCode))
+                {
+                    ResultBase<bool> result = await GetAsync("https://desk.ctyun.cn:8810/api/cdserv/client/device/getSmsCode?mobilePhone=" + userphone + "&captchaCode=" + captchaCode, AppJsonSerializerContext.Default.ResultBaseBoolean);
+                    if (result.Success)
+                    {
+                        return true;
+                    }
+                    Utility.WriteLine(ConsoleColor.Red, $"重试{i}, GetSmsCode Error:{result.Msg}");
+                }
+            }
+            return false;
         }
 
-        private async Task<string> GetCaptcha()
+        public async Task<bool> BindingDeviceAsync(string verificationCode)
+        {
+            var result = await PostAsync($"https://desk.ctyun.cn:8810/api/cdserv/client/device/binding?verificationCode={verificationCode}&deviceName=Chrome%E6%B5%8F%E8%A7%88%E5%99%A8&deviceCode={deviceCode}&deviceModel=Windows+NT+10.0%3B+Win64%3B+x64&sysVersion=Windows+NT+10.0%3B+Win64%3B+x64&appVersion=3.2.0&hostName=pc.ctyun.cn&deviceInfo=Win32", null, AppJsonSerializerContext.Default.ResultBaseBoolean);
+            if (result.Success)
+            {
+                return true;
+            }
+            Utility.WriteLine(ConsoleColor.Red, "BindingDevice Error:" + result.Msg);
+            return false;
+        }
+
+        private async Task<ChallengeData> GetGenChallengeDataAsync()
+        {
+            using var content = new StringContent("{}", Encoding.UTF8, "application/json");
+            var result = await PostAsync("https://desk.ctyun.cn:8810/api/auth/client/genChallengeData", content, AppJsonSerializerContext.Default.ResultBaseChallengeData);
+            if (result.Success)
+            {
+                return result.Data;
+            }
+            Utility.WriteLine(ConsoleColor.Red, "GetGenChallengeDataAsync Error:" + result.Msg);
+            return null;
+        }
+
+        private async Task<byte[]> GetLoginCaptcha(string userphone)
         {
             try
             {
-                Console.WriteLine("正在识别验证码.");
-                var img = await client.GetByteArrayAsync($"https://desk.ctyun.cn:8810/api/auth/client/captcha?height=36&width=85&userInfo={loginInfo.UserPhone}&mode=auto&_t=1749139280909");
-                var cdfs = Convert.ToBase64String(img);
-                var request = new HttpRequestMessage(HttpMethod.Post, crcUrl);
-                var content = new MultipartFormDataContent
+                return await client.GetByteArrayAsync("https://desk.ctyun.cn:8810/api/auth/client/captcha?height=36&width=85&userInfo=" + userphone + "&mode=auto&_t=1749139280909");
+            }
+            catch (Exception ex)
+            {
+                Utility.WriteLine(ConsoleColor.Red, "登录验证码获取错误：" + ex.Message);
+                return null;
+            }
+        }
+
+        private async Task<byte[]> GetSmsCodeCaptcha()
+        {
+            try
+            {
+                return await GetByteAsync("https://desk.ctyun.cn:8810/api/auth/client/validateCode/captcha?width=120&height=40&_t=1766158569152");
+            }
+            catch (Exception ex)
+            {
+                Utility.WriteLine(ConsoleColor.Red, "短信验证码获取错误：" + ex.Message);
+                return null;
+            }
+        }
+
+        private async Task<string> GetCaptcha(byte[] img)
+        {
+            try
+            {
+                Utility.WriteLine(ConsoleColor.White, "正在识别验证码.");
+                using var request = new HttpRequestMessage(HttpMethod.Post, orcUrl);
+                using var content = new MultipartFormDataContent {
                 {
-                    { new StringContent(Convert.ToBase64String(img)), "image" }
-                };
+                    new StringContent(Convert.ToBase64String(img)),
+                    "image"
+                } };
                 request.Content = content;
-                var response = await client.SendAsync(request);
+                using var response = await client.SendAsync(request);
                 response.EnsureSuccessStatusCode();
                 var result = await response.Content.ReadAsStringAsync();
-                Console.WriteLine($"识别结果：{result}");
-                var doc = JsonDocument.Parse(result);
-                var root = doc.RootElement;
-                return root.GetProperty("data").GetString();
+                Utility.WriteLine(ConsoleColor.Green, "识别结果：" + result);
+                using var doc = JsonDocument.Parse(result);
+                return doc.RootElement.GetProperty("data").GetString();
             }
-            catch (Exception ex)
-            {
-                Console.WriteLine("验证码获取识别错误："+ex.Message);
+            catch (Exception ex) { 
+            
+                Utility.WriteLine(ConsoleColor.Red, "验证码识别错误：" + ex.Message);
                 return "";
             }
-
-
         }
 
-
-        public async Task<string> GetLlientListAsync()
+        public async Task<List<Desktop>> GetLlientListAsync()
         {
             try
             {
-                var result = await GetEncryptionAsync("https://desk.ctyun.cn:8810/api/desktop/client/list");
-                var resultJson = JsonSerializer.Deserialize(result, AppJsonSerializerContext.Default.ClientInfo);
-                return resultJson.data.desktopList[0].desktopId;
+                using var content = new StringContent("{\"getCnt\":20,\"desktopTypes\":[\"1\",\"2001\",\"2002\",\"2003\"],\"sortType\":\"createTimeV1\"}", Encoding.UTF8, "application/json");
+                return (await PostAsync("https://desk.ctyun.cn:8810/api/desktop/client/pageDesktop", content, AppJsonSerializerContext.Default.ResultBaseClientInfo)).Data.DesktopList;
             }
             catch (Exception ex)
             {
-                Console.WriteLine("获取设备信息错误。"+ex.Message);
-                return null; 
+                Utility.WriteLine(ConsoleColor.Red, "获取设备信息错误。" + ex.Message);
+                return null;
             }
         }
 
-        public async Task<string> ConnectAsync()
+        public async Task<ResultBase<ConnectInfo>> ConnectAsync(string desktopId)
         {
-            var collection = new List<KeyValuePair<string, string>>
-            {
-                new("objId",loginInfo.DesktopId),
-                new("objType", "0"),
-                new("osType", "15"),
-                new("deviceId", "60"),
-                new("vdCommand", ""),
-                new("ipAddress", ""),
-                new("macAddress", ""),
-            };
+            List<KeyValuePair<string, string>> collection =
+            [
+                new KeyValuePair<string, string>("objId", desktopId),
+                new KeyValuePair<string, string>("objType", "0"),
+                new KeyValuePair<string, string>("osType", "15"),
+                new KeyValuePair<string, string>("deviceId", deviceType),
+                new KeyValuePair<string, string>("vdCommand", ""),
+                new KeyValuePair<string, string>("ipAddress", ""),
+                new KeyValuePair<string, string>("macAddress", "")
+            ];
             AddCollection(collection);
-            return await PostEncryptionAsync("https://desk.ctyun.cn:8810/api/desktop/client/connect", collection);
+            using var content = new FormUrlEncodedContent(collection);
+            return await PostAsync("https://desk.ctyun.cn:8810/api/desktop/client/connect", content, AppJsonSerializerContext.Default.ResultBaseConnectInfo);
+        }
+
+        private async Task<ResultBase<T>> GetAsync<T>(string url, JsonTypeInfo<ResultBase<T>> typeInfo)
+        {
+            try
+            {
+                using var request = new HttpRequestMessage(HttpMethod.Get, url);
+                ApplySignature(request);
+                using var response = await client.SendAsync(request);
+                response.EnsureSuccessStatusCode();
+                return await response.Content.ReadFromJsonAsync(typeInfo);
+            }
+            catch (Exception ex)
+            {
+                return new ResultBase<T>
+                {
+                    Code = -100,
+                    Msg = ex.Message
+                };
+            }
+        }
+
+        private async Task<byte[]> GetByteAsync(string url)
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Get, url);
+            ApplySignature(request);
+            using var response = await client.SendAsync(request);
+            response.EnsureSuccessStatusCode();
+            return await response.Content.ReadAsByteArrayAsync();
+        }
+
+        private async Task<ResultBase<T>> PostAsync<T>(string url, HttpContent content, JsonTypeInfo<ResultBase<T>> typeInfo)
+        {
+            try
+            {
+                using var request = new HttpRequestMessage(HttpMethod.Post, url);
+                ApplySignature(request);
+                request.Content = content;
+                using var response = await client.SendAsync(request);
+                response.EnsureSuccessStatusCode();
+                return await response.Content.ReadFromJsonAsync(typeInfo);
+            }
+            catch (Exception ex)
+            {
+                return new ResultBase<T>
+                {
+                    Code = -100,
+                    Msg = ex.Message
+                };
+            }
+        }
+
+        private void ApplySignature(HttpRequestMessage request)
+        {
+            if (LoginInfo != null)
+            {
+                var timestamp = DateTimeOffset.Now.ToUnixTimeMilliseconds().ToString();
+                request.Headers.Add("ctg-userid", LoginInfo.UserId.ToString());
+                request.Headers.Add("ctg-tenantid", LoginInfo.TenantId.ToString());
+                request.Headers.Add("ctg-timestamp", timestamp);
+                request.Headers.Add("ctg-requestid", timestamp);
+                var str = $"{deviceType}{timestamp}{LoginInfo.TenantId}{timestamp}{LoginInfo.UserId}{version}{LoginInfo.SecretKey}";
+                request.Headers.Add("ctg-signaturestr", ComputeMD5(str));
+            }
         }
 
         private void AddCollection(List<KeyValuePair<string, string>> collection)
         {
-            collection.Add(new("deviceCode", loginInfo.DeviceCode));
-            collection.Add(new("deviceName", "Chrome浏览器"));
-            collection.Add(new("deviceType", loginInfo.DeviceType));
-            collection.Add(new("deviceModel", "Windows NT 10.0; Win64; x64"));
-            collection.Add(new("appVersion", "2.7.0"));
-            collection.Add(new("sysVersion", "Windows NT 10.0; Win64; x64"));
-            collection.Add(new("clientVersion", loginInfo.Version));
+            collection.Add(new KeyValuePair<string, string>("deviceCode", deviceCode));
+            collection.Add(new KeyValuePair<string, string>("deviceName", "Chrome浏览器"));
+            collection.Add(new KeyValuePair<string, string>("deviceType", deviceType));
+            collection.Add(new KeyValuePair<string, string>("deviceModel", "Windows NT 10.0; Win64; x64"));
+            collection.Add(new KeyValuePair<string, string>("appVersion", "3.2.0"));
+            collection.Add(new KeyValuePair<string, string>("sysVersion", "Windows NT 10.0; Win64; x64"));
+            collection.Add(new KeyValuePair<string, string>("clientVersion", version));
         }
+
         private static string ComputeMD5(string input)
         {
-            using (MD5 md5 = MD5.Create())
-            {
-                byte[] inputBytes = Encoding.UTF8.GetBytes(input);
-                byte[] hashBytes = md5.ComputeHash(inputBytes);
-
-                // 将字节数组转换为 32 位小写十六进制字符串
-                StringBuilder sb = new StringBuilder();
-                foreach (byte b in hashBytes)
-                {
-                    sb.Append(b.ToString("x2")); // x2 表示两位小写十六进制
-                }
-
-                // 如果你想要 16 位 MD5，可以取中间部分：
-                // return sb.ToString().Substring(8, 16);
-
-                return sb.ToString(); // 32位小写
-            }
+            byte[] inputBytes = Encoding.UTF8.GetBytes(input);
+            byte[] hashBytes = MD5.HashData(inputBytes);
+            return Convert.ToHexString(hashBytes).ToLowerInvariant();
         }
+        private static string ComputeSha256Hash(string rawData)
+        {
+            byte[] bytes = Encoding.UTF8.GetBytes(rawData);
+            using SHA256 sha256 = SHA256.Create();
+            byte[] hash = sha256.ComputeHash(bytes);
+            return BitConverter.ToString(hash).Replace("-", "").ToLowerInvariant();
+        }
+
     }
 }

@@ -2,21 +2,29 @@
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
+using System.Text.Json.Serialization;
 using System.Threading.Tasks;
 
 namespace CtYun.Models
 {
     public class ClientInfo
     {
-        public ClientInfoData data { get; set; }
-    }
-    public class ClientInfoData()
-    {
-        public List<DesktopList> desktopList { get; set; }
+        [JsonPropertyName("desktopList")]
+        public List<Desktop> DesktopList { get; set; }
     }
 
-    public class DesktopList
+
+    public class Desktop
     {
-        public string desktopId { get; set; }
+        [JsonPropertyName("desktopId")]
+        public string DesktopId { get; set; }
+
+        [JsonPropertyName("desktopName")]
+        public string DesktopName { get; set; }
+
+        [JsonPropertyName("desktopCode")]
+        public string DesktopCode { get; set; }
+
+        public DesktopInfo DesktopInfo { get; set; }
     }
 }

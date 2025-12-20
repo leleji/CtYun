@@ -5,24 +5,29 @@ namespace CtYun
 {
     public  class ConnectInfo
     {
-        public ConnectInfoData data { get; set; }
+        [JsonPropertyName("desktopInfo")]
+        public DesktopInfo DesktopInfo { get; set; }
     }
-    public  class ConnectInfoData
+
+    public class DesktopInfo
     {
-        public DesktopInfo desktopInfo { get; set; }
-    }
-    public  class DesktopInfo
-    {
-        public string host { get; set; }
-        public string port { get; set; }
+        [JsonPropertyName("host")]
+        public string Host { get; set; }
 
-        public string clinkLvsOutHost { get; set; }
+        [JsonPropertyName("port")]
+        public string Port { get; set; }
 
-        public string caCert { get; set; }
-        public string clientCert { get; set; }
-        public string clientKey { get; set; }
+        [JsonPropertyName("clinkLvsOutHost")]
+        public string ClinkLvsOutHost { get; set; }
 
-        public int desktopId { get; set; }
+        [JsonPropertyName("caCert")]
+        public string CaCert { get; set; }
+
+        [JsonPropertyName("clientCert")]
+        public string ClientCert { get; set; }
+
+        [JsonPropertyName("clientKey")]
+        public string ClientKey { get; set; }
     }
     public class ConnecMessage
     {
