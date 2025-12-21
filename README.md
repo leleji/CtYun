@@ -15,7 +15,7 @@ echo "web_$(cat /dev/urandom | tr -dc 'a-zA-Z0-9' | fold -w 32 | head -n 1)"
 ```
 ```
 docker run \
-  --name ctyun \
+  --name ctyun -it \
   -e APP_USER="你的账号" \
   -e APP_PASSWORD='你的密码' \
   -e DEVICECODE='设备Id' \
