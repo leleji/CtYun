@@ -14,8 +14,9 @@ Linux 可使用以下代码生成
 echo "web_$(cat /dev/urandom | tr -dc 'a-zA-Z0-9' | fold -w 32 | head -n 1)"
 ```
 ```
-docker run \
-  --name ctyun -it \
+//第一次初始化运行这个。
+docker run -it \
+  --name ctyun \
   -e APP_USER="你的账号" \
   -e APP_PASSWORD='你的密码' \
   -e DEVICECODE='设备Id' \
