@@ -21,13 +21,14 @@ namespace CtYun
 
         private const string deviceType = "60";
 
-        private readonly string deviceCode = File.ReadAllText("DeviceCode.txt");
+        private string _deviceCode;
 
         private readonly HttpClient client;
 
         public LoginInfo LoginInfo { get; set; }
-        public CtYunApi()
+        public CtYunApi(string deviceCode)
         {
+            _deviceCode = _deviceCode;
             var handler = new HttpClientHandler();
             client = new HttpClient(handler);
             client.DefaultRequestHeaders.Add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36");
@@ -95,7 +96,7 @@ namespace CtYun
 
         public async Task<bool> BindingDeviceAsync(string verificationCode)
         {
-            var result = await PostAsync($"https://desk.ctyun.cn:8810/api/cdserv/client/device/binding?verificationCode={verificationCode}&deviceName=Chrome%E6%B5%8F%E8%A7%88%E5%99%A8&deviceCode={deviceCode}&deviceModel=Windows+NT+10.0%3B+Win64%3B+x64&sysVersion=Windows+NT+10.0%3B+Win64%3B+x64&appVersion=3.2.0&hostName=pc.ctyun.cn&deviceInfo=Win32", null, AppJsonSerializerContext.Default.ResultBaseBoolean);
+            var result = await PostAsync($"https://desk.ctyun.cn:8810/api/cdserv/client/device/binding?verificationCode={verificationCode}&deviceName=Chrome%E6%B5%8F%E8%A7%88%E5%99%A8&deviceCode={_deviceCode}&deviceModel=Windows+NT+10.0%3B+Win64%3B+x64&sysVersion=Windows+NT+10.0%3B+Win64%3B+x64&appVersion=3.2.0&hostName=pc.ctyun.cn&deviceInfo=Win32", null, AppJsonSerializerContext.Default.ResultBaseBoolean);
             if (result.Success)
             {
                 return true;
@@ -265,7 +266,7 @@ namespace CtYun
 
         private void AddCollection(List<KeyValuePair<string, string>> collection)
         {
-            collection.Add(new KeyValuePair<string, string>("deviceCode", deviceCode));
+            collection.Add(new KeyValuePair<string, string>("deviceCode", _deviceCode));
             collection.Add(new KeyValuePair<string, string>("deviceName", "Chrome浏览器"));
             collection.Add(new KeyValuePair<string, string>("deviceType", deviceType));
             collection.Add(new KeyValuePair<string, string>("deviceModel", "Windows NT 10.0; Win64; x64"));

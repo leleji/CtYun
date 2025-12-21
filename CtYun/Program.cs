@@ -9,30 +9,33 @@ using System.Text;
 using System.Text.Json;
 
 Utility.WriteLine(ConsoleColor.Green, $"版本：v {Assembly.GetEntryAssembly().GetName().Version}");
-if (!File.Exists("DeviceCode.txt"))
-{
-    File.WriteAllText("DeviceCode.txt", "web_" + GenerateRandomString(32));
-}
 string userphone;
 string password;
+string devicecode;
 if (IsRunningInContainer() || Debugger.IsAttached)
 {
     userphone = Environment.GetEnvironmentVariable("APP_USER");
     password = Environment.GetEnvironmentVariable("APP_PASSWORD");
-    if (string.IsNullOrEmpty(userphone) || string.IsNullOrEmpty(password))
+    devicecode = Environment.GetEnvironmentVariable("DEVICECODE");
+    if (string.IsNullOrEmpty(userphone) || string.IsNullOrEmpty(password) || string.IsNullOrEmpty(devicecode))
     {
-        Utility.WriteLine(ConsoleColor.Red, "错误：必须设置环境变量 APP_USER 和 APP_PASSWORD");
+        Utility.WriteLine(ConsoleColor.Red, "错误：必须设置环境变量 APP_USER ， APP_PASSWORD ，DEVICECODE");
         return;
     }
 }
 else
 {
+    if (!File.Exists("DeviceCode.txt"))
+    {
+        File.WriteAllText("DeviceCode.txt", "web_" + GenerateRandomString(32));
+    }
+    devicecode= File.ReadAllText("DeviceCode.txt");
     Utility.WriteLine(ConsoleColor.Yellow, "请输入账号：");
     userphone = Console.ReadLine();
     Utility.WriteLine(ConsoleColor.Yellow, "请输入密码：");
     password = ReadPassword();
 }
-var cyApi = new CtYunApi();
+var cyApi = new CtYunApi(devicecode);
 if (!await cyApi.LoginAsync(userphone, password))
 {
     return;
