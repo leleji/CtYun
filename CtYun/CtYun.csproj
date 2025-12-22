@@ -6,8 +6,8 @@
 		<ImplicitUsings>enable</ImplicitUsings>
 		<Nullable>disable</Nullable>
 		<PublishAot>true</PublishAot>
-		<FileVersion>1.1.0</FileVersion>
-		<AssemblyVersion>1.1.0</AssemblyVersion>
+		<FileVersion>1.1.1</FileVersion>
+		<AssemblyVersion>1.1.1</AssemblyVersion>
 	</PropertyGroup>
 
 </Project>
