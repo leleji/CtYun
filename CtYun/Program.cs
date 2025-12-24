@@ -139,11 +139,6 @@ static async Task ReceiveLoop(ClientWebSocket ws, Desktop desktop, CancellationT
                 await ws.SendAsync(response, WebSocketMessageType.Binary, true, ct);
                 Utility.WriteLine(ConsoleColor.DarkGreen, $"[{desktop.DesktopCode}] -> 发送保活响应成功");
             }
-            else
-            {
-                Utility.WriteLine(ConsoleColor.Red,
-                   $"[{desktop.DesktopCode}] -> 保活校验错误");
-            }
         }
     }
 }
