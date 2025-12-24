@@ -1,236 +1,199 @@
-﻿using CtYun;
-using CtYun.Models;
-using System.Diagnostics;
+﻿using System;
+using System.IO;
 using System.Net.WebSockets;
 using System.Reflection;
-using System.Runtime.InteropServices.JavaScript;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Threading;
+using System.Threading.Tasks;
+using System.Collections.Generic;
+using System.Linq;
+using System.Diagnostics;
+using CtYun;
+using CtYun.Models;
 
-Utility.WriteLine(ConsoleColor.Green, $"版本：v {Assembly.GetEntryAssembly().GetName().Version}");
-string userphone;
-string password;
-string devicecode;
-if (IsRunningInContainer() || Debugger.IsAttached)
-{
-    userphone = Environment.GetEnvironmentVariable("APP_USER");
-    password = Environment.GetEnvironmentVariable("APP_PASSWORD");
-    devicecode = Environment.GetEnvironmentVariable("DEVICECODE");
-    if (string.IsNullOrEmpty(userphone) || string.IsNullOrEmpty(password) || string.IsNullOrEmpty(devicecode))
-    {
-        Utility.WriteLine(ConsoleColor.Red, "错误：必须设置环境变量 APP_USER ， APP_PASSWORD ，DEVICECODE");
-        return;
-    }
-}
-else
-{
-    if (!File.Exists("DeviceCode.txt"))
-    {
-        File.WriteAllText("DeviceCode.txt", "web_" + GenerateRandomString(32));
-    }
-    devicecode= File.ReadAllText("DeviceCode.txt");
-    Utility.WriteLine(ConsoleColor.Yellow, "请输入账号：");
-    userphone = Console.ReadLine();
-    Utility.WriteLine(ConsoleColor.Yellow, "请输入密码：");
-    password = ReadPassword();
-}
-var cyApi = new CtYunApi(devicecode);
-if (!await cyApi.LoginAsync(userphone, password))
-{
-    return;
-}
-Utility.WriteLine(ConsoleColor.Green, "登录成功。");
-if (!cyApi.LoginInfo.BondedDevice)
-{
-    if (!(await cyApi.GetSmsCodeAsync(userphone)))
-    {
-        return;
-    }
-    Utility.WriteLine(ConsoleColor.Yellow, "请输入短信验证码：");
-    var verificationCode = Console.ReadLine();
-    if (!(await cyApi.BindingDeviceAsync(verificationCode)))
-    {
-        return;
-    }
-    Utility.WriteLine(ConsoleColor.Green, "设备绑定成功。");
-}
+
+CancellationTokenSource GlobalCts = new CancellationTokenSource();
+
+
+Utility.WriteLine(ConsoleColor.Green, $"版本：v {Assembly.GetEntryAssembly()?.GetName().Version}");
+
+var (userPhone, password, deviceCode) = ResolveCredentials();
+if (string.IsNullOrEmpty(userPhone)) return;
+
+var cyApi = new CtYunApi(deviceCode);
+if (!await PerformLoginSequence(cyApi, userPhone, password)) return;
+
 var desktopList = await cyApi.GetLlientListAsync();
-Utility.WriteLine(ConsoleColor.Green, $"获取到 {desktopList.Count} 台电脑");
-foreach (Desktop d in desktopList)
+var activeDesktops = new List<Desktop>();
+foreach (var d in desktopList)
 {
     var connectResult = await cyApi.ConnectAsync(d.DesktopId);
     if (connectResult.Success && connectResult.Data.DesktopInfo != null)
     {
         d.DesktopInfo = connectResult.Data.DesktopInfo;
-        Utility.WriteLine(ConsoleColor.Green, d.DesktopCode + "：connect信息获取成功");
-    }
-    else
-    {
-        Utility.WriteLine(ConsoleColor.Red, d.DesktopCode + "：connect信息获取错误该机器将跳过保活,检查电脑是否开机," + connectResult.Msg);
+        activeDesktops.Add(d);
     }
 }
-if (desktopList.Count((Desktop v) => v.DesktopInfo != null) == 0)
+
+if (activeDesktops.Count == 0) return;
+
+Utility.WriteLine(ConsoleColor.Yellow, "保活任务启动：每 60 秒强制重连一次。");
+
+// 为每台设备开启独立的保活任务
+var tasks = activeDesktops.Select(d => KeepAliveWorkerWithForcedReset(d, GlobalCts.Token));
+
+Console.CancelKeyPress += (s, e) => { e.Cancel = true; GlobalCts.Cancel(); };
+
+try { await Task.WhenAll(tasks); }
+catch (OperationCanceledException) { Utility.WriteLine(ConsoleColor.Yellow, "程序已停止。"); }
+
+
+static async Task KeepAliveWorkerWithForcedReset(Desktop desktop, CancellationToken globalToken)
 {
-    Utility.WriteLine(ConsoleColor.Red, "connect连接信息获取错误，检查电脑是否开机");
-    return;
-}
-Utility.WriteLine(ConsoleColor.Yellow, "日志如果显示[发送保活消息成功。]才算成功。");
-foreach (Desktop d2 in desktopList)
-{
-    _ =Task.Run(async delegate
+    const string InitialPayloadBase64 = "UkVEUQIAAAACAAAAGgAAAAAAAAABAAEAAAABAAAAEgAAAAkAAAAECAAA";
+    var uri = new Uri($"wss://{desktop.DesktopInfo.ClinkLvsOutHost}/clinkProxy/{desktop.DesktopId}/MAIN");
+
+    while (!globalToken.IsCancellationRequested)
     {
-        await Connec(d2);
-    });
-}
-Console.Read();
-static async Task Connec(Desktop desktop)
-{
-    byte[] message;
-    try
-    {
-        ConnecMessage connectMessage = new ConnecMessage
-        {
-            type = 1,
-            ssl = 1,
-            host = desktop.DesktopInfo.ClinkLvsOutHost.Split(":")[0],
-            port = desktop.DesktopInfo.ClinkLvsOutHost.Split(":")[1],
-            ca = desktop.DesktopInfo.CaCert,
-            cert = desktop.DesktopInfo.ClientCert,
-            key = desktop.DesktopInfo.ClientKey,
-            servername = desktop.DesktopInfo.Host + ":" + desktop.DesktopInfo.Port
-        };
-        message = JsonSerializer.SerializeToUtf8Bytes(connectMessage, AppJsonSerializerContext.Default.ConnecMessage);
-    }
-    catch (Exception ex)
-    {
-        Exception ex2 = ex;
-        Utility.WriteLine(ConsoleColor.Red, desktop.DesktopCode + "=>connect数据校验错误" + ex2.Message);
-        return;
-    }
-    while (true)
-    {
-        var uri = new Uri($"wss://{desktop.DesktopInfo.ClinkLvsOutHost}/clinkProxy/{desktop.DesktopId}/MAIN");
+        // 为本次 60 秒生命周期创建独立的控制源
+        using var sessionCts = CancellationTokenSource.CreateLinkedTokenSource(globalToken);
+        sessionCts.CancelAfter(TimeSpan.FromMinutes(1)); // 60秒后自动触发取消
+
         using var client = new ClientWebSocket();
-        // 添加 Header
         client.Options.SetRequestHeader("Origin", "https://pc.ctyun.cn");
-        client.Options.SetRequestHeader("Pragma", "no-cache");
-        client.Options.SetRequestHeader("Cache-Control", "no-cache");
-        client.Options.SetRequestHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36");
-        client.Options.AddSubProtocol("binary"); // 与 Sec-WebSocket-Protocol 对应
+        client.Options.AddSubProtocol("binary");
+
         try
         {
-            Utility.WriteLine(ConsoleColor.Green, desktop.DesktopCode + "=>连接服务器中...");
-            await client.ConnectAsync(uri, CancellationToken.None);
-            Utility.WriteLine(ConsoleColor.Green, desktop.DesktopCode + "=>连接成功!");
-            //接收消息
-            _ = Task.Run(() => ReceiveMessagesAsync(client, CancellationToken.None));
+            Utility.WriteLine(ConsoleColor.Cyan, $"[{desktop.DesktopCode}] === 新周期开始，尝试连接 ===");
+            await client.ConnectAsync(uri, sessionCts.Token);
 
-            Utility.WriteLine(ConsoleColor.Green, desktop.DesktopCode + "=>发送连接信息.");
-            await client.SendAsync(message, WebSocketMessageType.Text, true, CancellationToken.None);
+            // 1. 发送 Json 握手信息
+            var connectMessage = new ConnecMessage
+            {
+                type = 1,
+                ssl = 1,
+                host = desktop.DesktopInfo.ClinkLvsOutHost.Split(":")[0],
+                port = desktop.DesktopInfo.ClinkLvsOutHost.Split(":")[1],
+                ca = desktop.DesktopInfo.CaCert,
+                cert = desktop.DesktopInfo.ClientCert,
+                key = desktop.DesktopInfo.ClientKey,
+                servername = desktop.DesktopInfo.Host + ":" + desktop.DesktopInfo.Port
+            };
+            var msgBytes = JsonSerializer.SerializeToUtf8Bytes(connectMessage, AppJsonSerializerContext.Default.ConnecMessage);
+            await client.SendAsync(msgBytes, WebSocketMessageType.Text, true, sessionCts.Token);
 
+            // 2. 发送初始保活二进制包
+            await Task.Delay(500, sessionCts.Token);
+            await client.SendAsync(Convert.FromBase64String(InitialPayloadBase64), WebSocketMessageType.Binary, true, sessionCts.Token);
 
-            await Task.Delay(500);
-            await client.SendAsync(Convert.FromBase64String("UkVEUQIAAAACAAAAGgAAAAAAAAABAAEAAAABAAAAEgAAAAkAAAAECAAA"), WebSocketMessageType.Binary, true, CancellationToken.None);
-
-            await Task.Delay(TimeSpan.FromMinutes(1));
-            Utility.WriteLine(ConsoleColor.Green, desktop.DesktopCode + "=>准备关闭连接重新发送保活信息.");
-            await client.CloseAsync(WebSocketCloseStatus.NormalClosure, "Closing", CancellationToken.None);
-        }
-        catch (Exception ex)
-        {
-            Utility.WriteLine(ConsoleColor.Red, desktop.DesktopCode + "=>WebSocket error: " + ex.Message);
-        }
-        async Task ReceiveMessagesAsync(ClientWebSocket ws, CancellationToken token)
-        {
-            var recvBuffer = new byte[4096];
+            // 3. 运行接收循环，直到 60 秒时间到
+            Utility.WriteLine(ConsoleColor.Green, $"[{desktop.DesktopCode}] 连接已就绪，保持 60 秒...");
 
             try
             {
-                while (ws.State == WebSocketState.Open)
-                {
-                    var result = await ws.ReceiveAsync(new ArraySegment<byte>(recvBuffer), token);
-                    if (result.MessageType == WebSocketMessageType.Close)
-                    {
-                        Utility.WriteLine(ConsoleColor.Red, desktop.DesktopCode + "=>服务器关闭..");
-                        await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "Closing", token);
-                        break;
-                    }
-                    else
-                    {
-                        byte[] extracted = new byte[result.Count];
-                        Buffer.BlockCopy(recvBuffer, 0, extracted, 0, result.Count);
-                        var hex = BitConverter.ToString(extracted).Replace("-", "");
-                        if (hex.StartsWith("5245445102", StringComparison.OrdinalIgnoreCase))
-                        {
-                            Utility.WriteLine(ConsoleColor.Green, desktop.DesktopCode + "=>收到保活校验消息: " + hex);
-                            var e = new Encryption();
-                            var data = e.Execute(extracted);
-                            Utility.WriteLine(ConsoleColor.Green, desktop.DesktopCode + "=>发送保活消息.");
-                            await client.SendAsync(data, WebSocketMessageType.Binary, true, CancellationToken.None);
-                            Utility.WriteLine(ConsoleColor.Yellow, desktop.DesktopCode + "=>发送保活消息成功。");
-                        }
-                        else
-                        {
-                            if (hex.IndexOf("00000000") == -1)
-                            {
-                                Utility.WriteLine(ConsoleColor.White, desktop.DesktopCode + "=>收到消息: " + hex.Replace("000000000000", ""));
-                            }
-                        }
-
-
-
-
-                    }
-                }
+                await ReceiveLoop(client, desktop, sessionCts.Token);
             }
-            catch (Exception ex)
+            catch (OperationCanceledException)
             {
-
-
+                Utility.WriteLine(ConsoleColor.Yellow, $"[{desktop.DesktopCode}] 60秒时间到，准备重连...");
             }
         }
-
-
+        catch (Exception ex) when (!(ex is OperationCanceledException))
+        {
+            Utility.WriteLine(ConsoleColor.Red, $"[{desktop.DesktopCode}] 异常: {ex.Message}");
+            await Task.Delay(5000, globalToken); // 出错后等5秒再试，防止死循环刷请求
+        }
+        finally
+        {
+            if (client.State == WebSocketState.Open)
+            {
+                await client.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, "Timeout Reset", CancellationToken.None);
+            }
+        }
     }
 }
+
+static async Task ReceiveLoop(ClientWebSocket ws, Desktop desktop, CancellationToken ct)
+{
+    var buffer = new byte[8192];
+    var encryptor = new Encryption();
+
+    while (ws.State == WebSocketState.Open && !ct.IsCancellationRequested)
+    {
+        var result = await ws.ReceiveAsync(new ArraySegment<byte>(buffer), ct);
+        if (result.MessageType == WebSocketMessageType.Close) break;
+
+        if (result.Count > 0)
+        {
+            var data = buffer.AsSpan(0, result.Count).ToArray();
+            var hex = BitConverter.ToString(data).Replace("-", "");
+
+            if (hex.StartsWith("5245445102", StringComparison.OrdinalIgnoreCase))
+            {
+                Utility.WriteLine(ConsoleColor.Green,
+                    $"[{desktop.DesktopCode}] -> 收到保活校验");
+                var response = encryptor.Execute(data);
+                await ws.SendAsync(response, WebSocketMessageType.Binary, true, ct);
+                Utility.WriteLine(ConsoleColor.DarkGreen, $"[{desktop.DesktopCode}] -> 发送保活响应成功");
+            }
+            else
+            {
+                Utility.WriteLine(ConsoleColor.Red,
+                   $"[{desktop.DesktopCode}] -> 保活校验错误");
+            }
+        }
+    }
+}
+
+#region 辅助工具
+static (string user, string pwd, string code) ResolveCredentials()
+{
+    if (IsRunningInContainer() || Debugger.IsAttached)
+    {
+        return (Environment.GetEnvironmentVariable("APP_USER"),
+                Environment.GetEnvironmentVariable("APP_PASSWORD"),
+                Environment.GetEnvironmentVariable("DEVICECODE"));
+    }
+    if (!File.Exists("DeviceCode.txt")) File.WriteAllText("DeviceCode.txt", "web_" + GenerateRandomString(32));
+    var code = File.ReadAllText("DeviceCode.txt");
+    Console.Write("账号: "); var u = Console.ReadLine();
+    Console.Write("密码: "); var p = ReadPassword();
+    return (u, p, code);
+}
+
+static async Task<bool> PerformLoginSequence(CtYunApi api, string u, string p)
+{
+    if (!await api.LoginAsync(u, p)) return false;
+    if (!api.LoginInfo.BondedDevice)
+    {
+        await api.GetSmsCodeAsync(u);
+        Console.Write("短信验证码: ");
+        if (!await api.BindingDeviceAsync(Console.ReadLine())) return false;
+    }
+    return true;
+}
+
 static string GenerateRandomString(int length)
 {
-    string chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
-    RandomNumberGenerator rng = RandomNumberGenerator.Create();
-    byte[] data = new byte[length];
-    rng.GetBytes(data);
-    char[] result = new char[length];
-    for (int i = 0; i < length; i++)
-    {
-        result[i] = chars[data[i] % chars.Length];
-    }
-    return new string(result);
+    const string chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+    return new string(Enumerable.Repeat(chars, length).Select(s => s[RandomNumberGenerator.GetInt32(s.Length)]).ToArray());
 }
-static bool IsRunningInContainer()
-{
-    return File.Exists("/.dockerenv");
-}
+
+static bool IsRunningInContainer() => File.Exists("/.dockerenv");
+
 static string ReadPassword()
 {
-    StringWriter password2 = new StringWriter();
+    StringBuilder sb = new StringBuilder();
     ConsoleKeyInfo key;
-    do
+    while ((key = Console.ReadKey(true)).Key != ConsoleKey.Enter)
     {
-        key = Console.ReadKey(intercept: true);
-        if (key.Key != ConsoleKey.Enter && key.Key != ConsoleKey.Backspace)
-        {
-            password2.Write(key.KeyChar);
-            Console.Write("*");
-        }
-        else if (key.Key == ConsoleKey.Backspace && password2.ToString().Length > 0)
-        {
-            password2.GetStringBuilder().Remove(password2.ToString().Length - 1, 1);
-            Console.Write("\b \b");
-        }
+        if (key.Key == ConsoleKey.Backspace && sb.Length > 0) { sb.Remove(sb.Length - 1, 1); Console.Write("\b \b"); }
+        else if (!char.IsControl(key.KeyChar)) { sb.Append(key.KeyChar); Console.Write("*"); }
     }
-    while (key.Key != ConsoleKey.Enter);
     Console.WriteLine();
-    return password2.ToString();
+    return sb.ToString();
 }
-	
+#endregion

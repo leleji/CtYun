@@ -71,7 +71,12 @@ namespace CtYun
                     LoginInfo = result.Data;
                     return true;
                 }
+              
                 Utility.WriteLine(ConsoleColor.Red, $"重试{i}, Login Error:{result.Msg}");
+                if (result.Msg == "用户名或密码错误")
+                {
+                    return false;
+                }
             }
             return false;
         }
