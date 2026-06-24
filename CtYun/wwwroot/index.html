@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CtYun 管理后台</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <main id="auth-screen" class="auth-screen">
+    <section id="login-panel" class="auth-panel">
+      <div class="auth-brand">
+        <span class="brand-mark">CY</span>
+        <div>
+          <strong>CtYun Console</strong>
+          <small>管理员验证</small>
+        </div>
+      </div>
+      <div>
+        <p class="eyebrow">Admin Access</p>
+        <h1>登录管理后台</h1>
+      </div>
+      <form id="login-form" class="auth-form">
+        <label class="field">
+          <span>管理员密码</span>
+          <input id="admin-password" type="password" autocomplete="current-password" required>
+        </label>
+        <button class="primary-button" type="submit">进入后台</button>
+      </form>
+      <p class="auth-note">默认初始密码为 admin123；如果设置了 ADMIN_INITIAL_PASSWORD，请使用该值。首次登录后必须修改。</p>
+    </section>
+
+    <section id="change-password-panel" class="auth-panel" hidden>
+      <div class="auth-brand">
+        <span class="brand-mark">CY</span>
+        <div>
+          <strong>CtYun Console</strong>
+          <small>首次安全设置</small>
+        </div>
+      </div>
+      <div>
+        <p class="eyebrow">Password Required</p>
+        <h1>修改初始密码</h1>
+      </div>
+      <form id="change-password-form" class="auth-form">
+        <label class="field">
+          <span>当前密码</span>
+          <input id="current-admin-password" type="password" autocomplete="current-password" required>
+        </label>
+        <label class="field">
+          <span>新密码</span>
+          <input id="new-admin-password" type="password" autocomplete="new-password" minlength="8" required>
+        </label>
+        <label class="field">
+          <span>确认新密码</span>
+          <input id="confirm-admin-password" type="password" autocomplete="new-password" minlength="8" required>
+        </label>
+        <button class="primary-button" type="submit">保存新密码</button>
+      </form>
+      <p class="auth-note">新密码至少 8 个字符。保存后会重新进入控制台。</p>
+    </section>
+  </main>
+
+  <div id="app-shell" class="shell" hidden>
+    <aside class="sidebar">
+      <div class="brand">
+        <span class="brand-mark">CY</span>
+        <div>
+          <strong>CtYun Console</strong>
+          <small>云电脑保活管理</small>
+        </div>
+      </div>
+
+      <nav class="nav">
+        <button class="nav-item active" data-view="overview" type="button">总览</button>
+        <button class="nav-item" data-view="accounts" type="button">账号配置</button>
+        <button class="nav-item" data-view="events" type="button">运行日志</button>
+      </nav>
+
+      <div class="service-card">
+        <span id="service-dot" class="dot"></span>
+        <div>
+          <strong id="service-state">等待状态</strong>
+          <small id="service-detail">正在读取服务信息</small>
+        </div>
+      </div>
+    </aside>
+
+    <main class="content">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">Docker 零配置部署</p>
+          <h1>管理后台</h1>
+        </div>
+        <div class="actions">
+          <button id="refresh-btn" class="icon-button" type="button" title="刷新">
+            <span aria-hidden="true">↻</span>
+          </button>
+          <button id="stop-btn" class="ghost-button" type="button">停止</button>
+          <button id="restart-btn" class="primary-button" type="button">重启保活</button>
+          <button id="logout-btn" class="ghost-button" type="button">退出</button>
+        </div>
+      </header>
+
+      <section id="overview" class="view active">
+        <div class="metrics">
+          <div class="metric">
+            <span>账号</span>
+            <strong id="metric-accounts">0</strong>
+          </div>
+          <div class="metric">
+            <span>云电脑</span>
+            <strong id="metric-desktops">0</strong>
+          </div>
+          <div class="metric">
+            <span>保活间隔</span>
+            <strong id="metric-interval">60s</strong>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-heading">
+            <div>
+              <p class="eyebrow">Runtime</p>
+              <h2>账号运行状态</h2>
+            </div>
+            <span id="config-path" class="path"></span>
+          </div>
+          <div id="account-state-list" class="state-list"></div>
+        </div>
+      </section>
+
+      <section id="accounts" class="view">
+        <form id="config-form" class="panel form-panel">
+          <div class="panel-heading">
+            <div>
+              <p class="eyebrow">Configuration</p>
+              <h2>账号与保活配置</h2>
+            </div>
+            <button id="add-account-btn" class="ghost-button" type="button">添加账号</button>
+          </div>
+
+          <label class="field interval-field">
+            <span>强制重连间隔（秒）</span>
+            <input id="keep-alive-seconds" type="number" min="10" step="1">
+          </label>
+
+          <div id="accounts-editor" class="accounts-editor"></div>
+
+          <div class="form-actions">
+            <button class="primary-button" type="submit">保存并重启</button>
+          </div>
+        </form>
+      </section>
+
+      <section id="events" class="view">
+        <div class="panel">
+          <div class="panel-heading">
+            <div>
+              <p class="eyebrow">Events</p>
+              <h2>运行日志</h2>
+            </div>
+          </div>
+          <div id="event-list" class="event-list"></div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+  <template id="account-template">
+    <article class="account-card">
+      <div class="account-card-head">
+        <strong class="account-title">账号</strong>
+        <button class="icon-button remove-account" type="button" title="删除账号">×</button>
+      </div>
+      <div class="account-grid">
+        <label class="field">
+          <span>名称</span>
+          <input data-field="name" autocomplete="off" placeholder="例如：主账号">
+        </label>
+        <label class="field">
+          <span>手机号 / 账号</span>
+          <input data-field="user" autocomplete="username">
+        </label>
+        <label class="field">
+          <span>密码</span>
+          <input data-field="password" type="password" autocomplete="current-password" placeholder="留空表示不修改">
+        </label>
+        <label class="field">
+          <span>设备码</span>
+          <input data-field="deviceCode" autocomplete="off" placeholder="自动生成，可留空">
+        </label>
+      </div>
+      <div class="bind-row">
+        <button class="ghost-button test-login" type="button">测试登录</button>
+        <button class="ghost-button send-sms" type="button">发送短信</button>
+        <label class="field code-field">
+          <span>短信验证码</span>
+          <input data-field="smsCode" inputmode="numeric" autocomplete="one-time-code">
+        </label>
+        <button class="primary-button bind-device" type="button">绑定设备</button>
+      </div>
+      <p class="account-message"></p>
+    </article>
+  </template>
+
+  <script src="/app.js"></script>
+</body>
+</html>

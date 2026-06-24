@@ -39,10 +39,6 @@ jobs:
     - name: Build
       run: dotnet build --no-restore --configuration Release
 
-    # 发布应用程序
-    - name: Publish Application
-      run: dotnet publish CtYun/CtYun.csproj -c Release -p:PublishAot=false -o publish
-
     # 登录 Docker Hub
     - name: Log in to Docker Hub
       uses: docker/login-action@v2

@@ -1,0 +1,15 @@
+services:
+  ctyun:
+    image: su3817807/ctyun:latest
+    build:
+      context: .
+      dockerfile: CtYun/Dockerfile
+    container_name: ctyun
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - ctyun-data:/app/data
+
+volumes:
+  ctyun-data:

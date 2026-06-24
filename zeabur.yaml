@@ -1,0 +1,60 @@
+apiVersion: zeabur.com/v1
+kind: Template
+metadata:
+  name: CtYun
+spec:
+  description: CtYun cloud PC keep-alive service with a built-in web admin panel.
+  icon: https://raw.githubusercontent.com/dotnet/brand/main/logo/dotnet-logo.svg
+  tags:
+    - Tool
+    - Docker
+  variables:
+    - key: PUBLIC_DOMAIN
+      type: DOMAIN
+      name: Domain
+      description: Choose the Zeabur domain for the CtYun admin panel.
+  readme: |-
+    # CtYun
+
+    CtYun logs in to Tianyi Cloud PC and keeps WebSocket sessions alive. This template deploys the built-in web admin panel, exposes HTTP port 8080, and persists account configuration under `/app/data`.
+
+    After deployment, open the assigned domain, add your CtYun account in the admin panel, save the configuration, and bind the device with SMS verification if prompted.
+  services:
+    - name: CtYun
+      icon: https://raw.githubusercontent.com/dotnet/brand/main/logo/dotnet-logo.svg
+      template: PREBUILT
+      domainKey: PUBLIC_DOMAIN
+      spec:
+        source:
+          image: su3817807/ctyun:latest
+        ports:
+          - id: web
+            port: 8080
+            type: HTTP
+        volumes:
+          - id: data
+            dir: /app/data
+        env:
+          PORT:
+            default: "8080"
+            readonly: true
+          ASPNETCORE_URLS:
+            default: http://0.0.0.0:8080
+            readonly: true
+          CTYUN_DATA_DIR:
+            default: /app/data
+            readonly: true
+  localization:
+    zh-CN:
+      description: 内置 Web 管理后台的天翼云电脑保活服务。
+      variables:
+        - key: PUBLIC_DOMAIN
+          type: DOMAIN
+          name: 域名
+          description: 选择 CtYun 管理后台使用的 Zeabur 域名。
+      readme: |-
+        # CtYun
+
+        CtYun 用于登录天翼云电脑并维持 WebSocket 保活连接。该模板会部署内置 Web 管理后台，暴露 HTTP 端口 8080，并将账号配置持久化到 `/app/data`。
+
+        部署完成后，打开 Zeabur 分配的域名，在后台添加天翼云电脑账号并保存配置；如果提示设备未绑定，可在后台发送短信验证码并完成绑定。

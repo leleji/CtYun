@@ -41,16 +41,16 @@ namespace CtYun
 
 
 
-        public async Task<bool> LoginAsync(string userphone, string password)
+        public async Task<bool> LoginAsync(string userphone, string password, CancellationToken ct = default)
         {
             for (int i = 1; i < 4; i++)
             {
-                var genChallengeData = await GetGenChallengeDataAsync();
+                var genChallengeData = await GetGenChallengeDataAsync(ct);
                 if (genChallengeData == null)
                 {
                     continue;
                 }
-                var captchaCode = await GetCaptcha(await GetLoginCaptcha(userphone));
+                var captchaCode = await GetCaptcha(await GetLoginCaptcha(userphone, ct), ct);
                 if (string.IsNullOrEmpty(captchaCode))
                 {
                     continue;
@@ -65,7 +65,7 @@ namespace CtYun
                 };
                 AddCollection(collection);
                 using FormUrlEncodedContent content = new FormUrlEncodedContent(collection);
-                ResultBase<LoginInfo> result = await PostAsync("https://desk.ctyun.cn:8810/api/auth/client/login", content, AppJsonSerializerContext.Default.ResultBaseLoginInfo);
+                ResultBase<LoginInfo> result = await PostAsync("https://desk.ctyun.cn:8810/api/auth/client/login", content, AppJsonSerializerContext.Default.ResultBaseLoginInfo, ct);
                 if (result.Success)
                 {
                     LoginInfo = result.Data;
@@ -81,14 +81,14 @@ namespace CtYun
             return false;
         }
 
-        public async Task<bool> GetSmsCodeAsync(string userphone)
+        public async Task<bool> GetSmsCodeAsync(string userphone, CancellationToken ct = default)
         {
             for (int i = 0; i < 3; i++)
             {
-                var captchaCode = await GetCaptcha(await GetSmsCodeCaptcha());
+                var captchaCode = await GetCaptcha(await GetSmsCodeCaptcha(ct), ct);
                 if (!string.IsNullOrEmpty(captchaCode))
                 {
-                    ResultBase<bool> result = await GetAsync("https://desk.ctyun.cn:8810/api/cdserv/client/device/getSmsCode?mobilePhone=" + userphone + "&captchaCode=" + captchaCode, AppJsonSerializerContext.Default.ResultBaseBoolean);
+                    ResultBase<bool> result = await GetAsync("https://desk.ctyun.cn:8810/api/cdserv/client/device/getSmsCode?mobilePhone=" + userphone + "&captchaCode=" + captchaCode, AppJsonSerializerContext.Default.ResultBaseBoolean, ct);
                     if (result.Success)
                     {
                         return true;
@@ -99,9 +99,9 @@ namespace CtYun
             return false;
         }
 
-        public async Task<bool> BindingDeviceAsync(string verificationCode)
+        public async Task<bool> BindingDeviceAsync(string verificationCode, CancellationToken ct = default)
         {
-            var result = await PostAsync($"https://desk.ctyun.cn:8810/api/cdserv/client/device/binding?verificationCode={verificationCode}&deviceName=Chrome%E6%B5%8F%E8%A7%88%E5%99%A8&deviceCode={_deviceCode}&deviceModel=Windows+NT+10.0%3B+Win64%3B+x64&sysVersion=Windows+NT+10.0%3B+Win64%3B+x64&appVersion=3.2.0&hostName=pc.ctyun.cn&deviceInfo=Win32", null, AppJsonSerializerContext.Default.ResultBaseBoolean);
+            var result = await PostAsync($"https://desk.ctyun.cn:8810/api/cdserv/client/device/binding?verificationCode={verificationCode}&deviceName=Chrome%E6%B5%8F%E8%A7%88%E5%99%A8&deviceCode={_deviceCode}&deviceModel=Windows+NT+10.0%3B+Win64%3B+x64&sysVersion=Windows+NT+10.0%3B+Win64%3B+x64&appVersion=3.2.0&hostName=pc.ctyun.cn&deviceInfo=Win32", null, AppJsonSerializerContext.Default.ResultBaseBoolean, ct);
             if (result.Success)
             {
                 return true;
@@ -110,10 +110,10 @@ namespace CtYun
             return false;
         }
 
-        private async Task<ChallengeData> GetGenChallengeDataAsync()
+        private async Task<ChallengeData> GetGenChallengeDataAsync(CancellationToken ct)
         {
             using var content = new StringContent("{}", Encoding.UTF8, "application/json");
-            var result = await PostAsync("https://desk.ctyun.cn:8810/api/auth/client/genChallengeData", content, AppJsonSerializerContext.Default.ResultBaseChallengeData);
+            var result = await PostAsync("https://desk.ctyun.cn:8810/api/auth/client/genChallengeData", content, AppJsonSerializerContext.Default.ResultBaseChallengeData, ct);
             if (result.Success)
             {
                 return result.Data;
@@ -122,11 +122,11 @@ namespace CtYun
             return null;
         }
 
-        private async Task<byte[]> GetLoginCaptcha(string userphone)
+        private async Task<byte[]> GetLoginCaptcha(string userphone, CancellationToken ct)
         {
             try
             {
-                return await client.GetByteArrayAsync("https://desk.ctyun.cn:8810/api/auth/client/captcha?height=36&width=85&userInfo=" + userphone + "&mode=auto&_t=1749139280909");
+                return await client.GetByteArrayAsync("https://desk.ctyun.cn:8810/api/auth/client/captcha?height=36&width=85&userInfo=" + userphone + "&mode=auto&_t=1749139280909", ct);
             }
             catch (Exception ex)
             {
@@ -135,11 +135,11 @@ namespace CtYun
             }
         }
 
-        private async Task<byte[]> GetSmsCodeCaptcha()
+        private async Task<byte[]> GetSmsCodeCaptcha(CancellationToken ct)
         {
             try
             {
-                return await GetByteAsync("https://desk.ctyun.cn:8810/api/auth/client/validateCode/captcha?width=120&height=40&_t=1766158569152");
+                return await GetByteAsync("https://desk.ctyun.cn:8810/api/auth/client/validateCode/captcha?width=120&height=40&_t=1766158569152", ct);
             }
             catch (Exception ex)
             {
@@ -148,10 +148,15 @@ namespace CtYun
             }
         }
 
-        private async Task<string> GetCaptcha(byte[] img)
+        private async Task<string> GetCaptcha(byte[] img, CancellationToken ct)
         {
             try
             {
+                if (img == null || img.Length == 0)
+                {
+                    return "";
+                }
+
                 Utility.WriteLine(ConsoleColor.White, "正在识别验证码.");
                 using var request = new HttpRequestMessage(HttpMethod.Post, orcUrl);
                 using var content = new MultipartFormDataContent {
@@ -160,7 +165,7 @@ namespace CtYun
                     "image"
                 } };
                 request.Content = content;
-                using var response = await client.SendAsync(request);
+                using var response = await client.SendAsync(request, ct);
                 response.EnsureSuccessStatusCode();
                 var result = await response.Content.ReadAsStringAsync();
                 Utility.WriteLine(ConsoleColor.Green, "识别结果：" + result);
@@ -174,12 +179,12 @@ namespace CtYun
             }
         }
 
-        public async Task<List<Desktop>> GetLlientListAsync()
+        public async Task<List<Desktop>> GetLlientListAsync(CancellationToken ct = default)
         {
             try
             {
                 using var content = new StringContent("{\"getCnt\":20,\"desktopTypes\":[\"1\",\"2001\",\"2002\",\"2003\"],\"sortType\":\"createTimeV1\"}", Encoding.UTF8, "application/json");
-                return (await PostAsync("https://desk.ctyun.cn:8810/api/desktop/client/pageDesktop", content, AppJsonSerializerContext.Default.ResultBaseClientInfo)).Data.DesktopList;
+                return (await PostAsync("https://desk.ctyun.cn:8810/api/desktop/client/pageDesktop", content, AppJsonSerializerContext.Default.ResultBaseClientInfo, ct)).Data.DesktopList;
             }
             catch (Exception ex)
             {
@@ -188,7 +193,7 @@ namespace CtYun
             }
         }
 
-        public async Task<ResultBase<ConnectInfo>> ConnectAsync(string desktopId)
+        public async Task<ResultBase<ConnectInfo>> ConnectAsync(string desktopId, CancellationToken ct = default)
         {
             List<KeyValuePair<string, string>> collection =
             [
@@ -202,16 +207,16 @@ namespace CtYun
             ];
             AddCollection(collection);
             using var content = new FormUrlEncodedContent(collection);
-            return await PostAsync("https://desk.ctyun.cn:8810/api/desktop/client/connect", content, AppJsonSerializerContext.Default.ResultBaseConnectInfo);
+            return await PostAsync("https://desk.ctyun.cn:8810/api/desktop/client/connect", content, AppJsonSerializerContext.Default.ResultBaseConnectInfo, ct);
         }
 
-        private async Task<ResultBase<T>> GetAsync<T>(string url, JsonTypeInfo<ResultBase<T>> typeInfo)
+        private async Task<ResultBase<T>> GetAsync<T>(string url, JsonTypeInfo<ResultBase<T>> typeInfo, CancellationToken ct)
         {
             try
             {
                 using var request = new HttpRequestMessage(HttpMethod.Get, url);
                 ApplySignature(request);
-                using var response = await client.SendAsync(request);
+                using var response = await client.SendAsync(request, ct);
                 response.EnsureSuccessStatusCode();
                 return await response.Content.ReadFromJsonAsync(typeInfo);
             }
@@ -225,23 +230,23 @@ namespace CtYun
             }
         }
 
-        private async Task<byte[]> GetByteAsync(string url)
+        private async Task<byte[]> GetByteAsync(string url, CancellationToken ct)
         {
             using var request = new HttpRequestMessage(HttpMethod.Get, url);
             ApplySignature(request);
-            using var response = await client.SendAsync(request);
+            using var response = await client.SendAsync(request, ct);
             response.EnsureSuccessStatusCode();
             return await response.Content.ReadAsByteArrayAsync();
         }
 
-        private async Task<ResultBase<T>> PostAsync<T>(string url, HttpContent content, JsonTypeInfo<ResultBase<T>> typeInfo)
+        private async Task<ResultBase<T>> PostAsync<T>(string url, HttpContent content, JsonTypeInfo<ResultBase<T>> typeInfo, CancellationToken ct)
         {
             try
             {
                 using var request = new HttpRequestMessage(HttpMethod.Post, url);
                 ApplySignature(request);
                 request.Content = content;
-                using var response = await client.SendAsync(request);
+                using var response = await client.SendAsync(request, ct);
                 response.EnsureSuccessStatusCode();
                 return await response.Content.ReadFromJsonAsync(typeInfo);
             }

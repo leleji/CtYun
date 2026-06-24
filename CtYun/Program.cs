@@ -1,432 +1,438 @@
 using CtYun;
 using CtYun.Models;
-using System.Net.WebSockets;
+using Microsoft.AspNetCore.HttpOverrides;
+using System.Globalization;
 using System.Reflection;
-using System.Security.Cryptography;
-using System.Text;
 using System.Text.Json;
 
-using var globalCts = new CancellationTokenSource();
+Utility.WriteLine(ConsoleColor.Green, $"版本：{Assembly.GetEntryAssembly()?.GetName().Version}");
 
-Utility.WriteLine(ConsoleColor.Green, $"版本：v {Assembly.GetEntryAssembly()?.GetName().Version}");
-
-var runtimeConfig = LoadRuntimeConfig();
-if (runtimeConfig.Accounts.Count == 0)
+var builder = WebApplication.CreateSlimBuilder(args);
+var urls = Environment.GetEnvironmentVariable("ASPNETCORE_URLS");
+if (string.IsNullOrWhiteSpace(urls))
 {
-    Utility.WriteLine(ConsoleColor.Red, "未读取到账号配置。请配置 accounts.json，或设置 APP_USER/APP_PASSWORD，或使用交互输入模式。");
-    return;
+    var port = Environment.GetEnvironmentVariable("PORT");
+    urls = string.IsNullOrWhiteSpace(port) ? "http://0.0.0.0:8080" : $"http://0.0.0.0:{port}";
 }
 
-Console.CancelKeyPress += (s, e) =>
+builder.WebHost.UseUrls(urls);
+builder.Services.ConfigureHttpJsonOptions(options => ConfigureJson(options.SerializerOptions));
+builder.Services.AddSingleton<CtYunConfigStore>();
+builder.Services.AddSingleton<AdminAuthService>();
+builder.Services.AddSingleton<CtYunKeepAliveService>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<CtYunKeepAliveService>());
+builder.Services.Configure<ForwardedHeadersOptions>(options =>
 {
-    e.Cancel = true;
-    globalCts.Cancel();
-};
+    options.ForwardedHeaders =
+        ForwardedHeaders.XForwardedProto |
+        ForwardedHeaders.XForwardedHost;
+    options.KnownNetworks.Clear();
+    options.KnownProxies.Clear();
+});
 
-var sessionTasks = runtimeConfig.Accounts.Select(account => RunAccountAsync(account, runtimeConfig, globalCts.Token));
+var app = builder.Build();
 
-try
+app.UseForwardedHeaders();
+app.Use(async (context, next) =>
 {
-    await Task.WhenAll(sessionTasks);
-}
-catch (OperationCanceledException)
+    var headers = context.Response.Headers;
+    headers["Content-Security-Policy"] = "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; frame-ancestors 'none'; form-action 'self'";
+    headers["Referrer-Policy"] = "no-referrer";
+    headers["X-Content-Type-Options"] = "nosniff";
+    headers["X-Frame-Options"] = "DENY";
+    await next();
+});
+app.UseHsts();
+app.UseDefaultFiles();
+app.UseStaticFiles();
+app.Use(async (context, next) =>
 {
-    Utility.WriteLine(ConsoleColor.Yellow, "程序已停止。");
-}
-
-async Task RunAccountAsync(AccountConfig account, RuntimeConfig runtimeConfig, CancellationToken ct)
-{
-    var label = AccountLabel(account);
-    var api = new CtYunApi(account.DeviceCode);
-
-    Utility.WriteLine(ConsoleColor.Cyan, $"[{label}] 开始登录。");
-    if (!await PerformLoginSequence(api, account, runtimeConfig, ct))
+    if (NeedsCsrfProtection(context.Request) && !IsSafeBrowserWrite(context))
     {
-        Utility.WriteLine(ConsoleColor.Red, $"[{label}] 登录失败，跳过该账号。");
+        context.Response.StatusCode = StatusCodes.Status403Forbidden;
+        await context.Response.WriteAsJsonAsync(new ApiMessage("Unsafe cross-site request blocked."), AppJsonSerializerContext.Default.ApiMessage);
         return;
     }
 
-    var desktopList = await api.GetLlientListAsync();
-    if (desktopList == null || desktopList.Count == 0)
+    await next();
+});
+app.Use(async (context, next) =>
+{
+    if (!context.Request.Path.StartsWithSegments("/api") ||
+        context.Request.Path.StartsWithSegments("/api/auth"))
     {
-        Utility.WriteLine(ConsoleColor.Yellow, $"[{label}] 未获取到云电脑。");
+        await next();
         return;
     }
 
-    var activeDesktops = new List<Desktop>();
-    foreach (var desktop in desktopList)
+    var auth = context.RequestServices.GetRequiredService<AdminAuthService>();
+    if (!auth.TryGetSession(context, out var mustChangePassword))
     {
-        if (desktop.UseStatusText != "运行中")
-        {
-            Utility.WriteLine(ConsoleColor.Red, $"[{label}][{desktop.DesktopCode}] [{desktop.UseStatusText}] 电脑未开机，正在开机，请在2分钟后重新运行软件。");
-        }
-
-        var connectResult = await api.ConnectAsync(desktop.DesktopId);
-        if (connectResult.Success && connectResult.Data?.DesktopInfo != null)
-        {
-            desktop.DesktopInfo = connectResult.Data.DesktopInfo;
-            activeDesktops.Add(desktop);
-        }
-        else
-        {
-            Utility.WriteLine(ConsoleColor.Red, $"[{label}] Connect Error: [{desktop.DesktopId}] {connectResult.Msg}");
-        }
-    }
-
-    if (activeDesktops.Count == 0)
-    {
-        Utility.WriteLine(ConsoleColor.Yellow, $"[{label}] 没有可保活的云电脑。");
+        context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+        await context.Response.WriteAsJsonAsync(new ApiMessage("请先登录管理员后台。"), AppJsonSerializerContext.Default.ApiMessage);
         return;
     }
 
-    Utility.WriteLine(ConsoleColor.Yellow, $"[{label}] 保活任务启动：每 {runtimeConfig.KeepAliveSeconds} 秒强制重连一次。");
-    var keepAliveTasks = activeDesktops.Select(d => KeepAliveWorkerWithForcedReset(api, account, d, runtimeConfig.KeepAliveSeconds, ct));
-    await Task.WhenAll(keepAliveTasks);
+    if (mustChangePassword)
+    {
+        context.Response.StatusCode = StatusCodes.Status403Forbidden;
+        await context.Response.WriteAsJsonAsync(new ApiMessage("首次登录必须先修改管理员密码。"), AppJsonSerializerContext.Default.ApiMessage);
+        return;
+    }
+
+    await next();
+});
+
+app.MapGet("/api/auth/status", (HttpContext context, AdminAuthService auth) => Results.Ok(auth.GetStatus(context)));
+
+app.MapPost("/api/auth/login", IResult (AdminLoginRequest request, HttpContext context, AdminAuthService auth) =>
+{
+    if (auth.IsLoginLockedOut(context, out var retryAfter))
+    {
+        return LoginBlocked(context, retryAfter);
+    }
+
+    if (!auth.VerifyPassword(request.Password))
+    {
+        auth.RecordFailedLogin(context, out retryAfter);
+        if (retryAfter > TimeSpan.Zero)
+        {
+            return LoginBlocked(context, retryAfter);
+        }
+
+        return Results.Unauthorized();
+    }
+
+    auth.RecordSuccessfulLogin(context);
+    auth.SignIn(context);
+    return Results.Ok(new AdminAuthStatusResponse
+    {
+        Authenticated = true,
+        MustChangePassword = auth.MustChangePassword
+    });
+});
+
+app.MapPost("/api/auth/change-password", IResult (AdminChangePasswordRequest request, HttpContext context, AdminAuthService auth) =>
+{
+    if (!auth.TryGetSession(context, out _))
+    {
+        return Results.Unauthorized();
+    }
+
+    if (!auth.TryChangePassword(request.CurrentPassword, request.NewPassword, out var message))
+    {
+        return Results.BadRequest(new ApiMessage(message));
+    }
+
+    auth.SignIn(context);
+    return Results.Ok(new ApiMessage(message));
+});
+
+app.MapPost("/api/auth/logout", IResult (HttpContext context, AdminAuthService auth) =>
+{
+    auth.SignOut(context);
+    return Results.Ok(new ApiMessage("已退出登录。"));
+});
+
+app.MapGet("/api/status", (CtYunConfigStore store, CtYunKeepAliveService service) => Results.Ok(new StatusResponse
+{
+    Configured = store.GetConfig().Accounts.Count > 0,
+    DataDir = store.DataDir,
+    ConfigPath = store.ConfigPath,
+    KeepAliveSeconds = store.GetConfig().KeepAliveSeconds,
+    Running = service.IsRunning,
+    Accounts = service.GetAccountStates(),
+    Events = service.GetEvents()
+}));
+
+app.MapGet("/api/config", (CtYunConfigStore store) => Results.Ok(store.GetSanitizedConfig()));
+
+app.MapPut("/api/config", async (AppConfig config, CtYunConfigStore store, CtYunKeepAliveService service, CancellationToken ct) =>
+{
+    var normalized = store.Normalize(config, keepExistingPasswords: true);
+    await store.SaveAsync(normalized, ct);
+    await service.ReloadAsync(ct);
+    return Results.Ok(store.GetSanitizedConfig());
+});
+
+app.MapPost("/api/accounts/test-login", async Task<IResult> (AccountConfig account, CtYunConfigStore store, CtYunKeepAliveService service, CancellationToken ct) =>
+{
+    var normalized = store.NormalizeAccount(account, keepExistingPassword: true);
+    if (string.IsNullOrWhiteSpace(normalized.User) || string.IsNullOrWhiteSpace(normalized.Password))
+    {
+        return Results.BadRequest(new ApiMessage("账号和密码不能为空。"));
+    }
+
+    normalized.DeviceCode = store.ResolveDeviceCode(normalized);
+    var result = await service.TestLoginAsync(normalized, ct);
+    return Results.Ok(result);
+});
+
+app.MapPost("/api/accounts/send-sms", async Task<IResult> (AccountConfig account, CtYunConfigStore store, CtYunKeepAliveService service, CancellationToken ct) =>
+{
+    var normalized = store.NormalizeAccount(account, keepExistingPassword: true);
+    if (string.IsNullOrWhiteSpace(normalized.User) || string.IsNullOrWhiteSpace(normalized.Password))
+    {
+        return Results.BadRequest(new ApiMessage("账号和密码不能为空。"));
+    }
+
+    normalized.DeviceCode = store.ResolveDeviceCode(normalized);
+    var result = await service.SendSmsAsync(normalized, ct);
+    return Results.Ok(result);
+});
+
+app.MapPost("/api/accounts/bind-device", async Task<IResult> (BindDeviceRequest request, CtYunConfigStore store, CtYunKeepAliveService service, CancellationToken ct) =>
+{
+    var account = store.NormalizeAccount(request.Account, keepExistingPassword: true);
+    if (string.IsNullOrWhiteSpace(account.User) || string.IsNullOrWhiteSpace(account.Password))
+    {
+        return Results.BadRequest(new ApiMessage("账号和密码不能为空。"));
+    }
+
+    if (string.IsNullOrWhiteSpace(request.Code))
+    {
+        return Results.BadRequest(new ApiMessage("短信验证码不能为空。"));
+    }
+
+    account.DeviceCode = store.ResolveDeviceCode(account);
+    var result = await service.BindDeviceAsync(account, request.Code, ct);
+    if (result.Success)
+    {
+        await service.ReloadAsync(ct);
+    }
+
+    return Results.Ok(result);
+});
+
+app.MapPost("/api/service/restart", async (CtYunKeepAliveService service, CancellationToken ct) =>
+{
+    await service.ReloadAsync(ct);
+    return Results.Ok(new ApiMessage("保活服务已重启。"));
+});
+
+app.MapPost("/api/service/stop", async (CtYunKeepAliveService service, CancellationToken ct) =>
+{
+    await service.StopSessionsAsync(ct);
+    return Results.Ok(new ApiMessage("保活服务已停止。"));
+});
+
+app.MapFallbackToFile("index.html");
+
+await app.RunAsync();
+
+static void ConfigureJson(JsonSerializerOptions options)
+{
+    options.TypeInfoResolverChain.Insert(0, AppJsonSerializerContext.Default);
 }
 
-async Task<bool> PerformLoginSequence(CtYunApi api, AccountConfig account, RuntimeConfig runtimeConfig, CancellationToken ct)
+static IResult LoginBlocked(HttpContext context, TimeSpan retryAfter)
 {
-    if (!await api.LoginAsync(account.User, account.Password))
+    var seconds = Math.Max(1, (int)Math.Ceiling(retryAfter.TotalSeconds));
+    context.Response.Headers["Retry-After"] = seconds.ToString(CultureInfo.InvariantCulture);
+    return Results.Json(
+        new ApiMessage("Too many failed login attempts. Try again later."),
+        statusCode: StatusCodes.Status429TooManyRequests);
+}
+
+static bool NeedsCsrfProtection(HttpRequest request)
+{
+    if (!request.Path.StartsWithSegments("/api"))
     {
         return false;
     }
 
-    if (api.LoginInfo.BondedDevice)
+    return HttpMethods.IsPost(request.Method) ||
+           HttpMethods.IsPut(request.Method) ||
+           HttpMethods.IsPatch(request.Method) ||
+           HttpMethods.IsDelete(request.Method);
+}
+
+static bool IsSafeBrowserWrite(HttpContext context)
+{
+    if (!context.Request.Headers.TryGetValue("X-CtYun-CSRF", out var csrf) ||
+        !StringValuesContain(csrf, "1"))
+    {
+        return false;
+    }
+
+    return HasSameOrigin(context);
+}
+
+static bool HasSameOrigin(HttpContext context)
+{
+    var origin = context.Request.Headers["Origin"].ToString();
+    if (!string.IsNullOrWhiteSpace(origin))
+    {
+        return Uri.TryCreate(origin, UriKind.Absolute, out var originUri) &&
+               IsRequestOrigin(context.Request, originUri);
+    }
+
+    var referer = context.Request.Headers["Referer"].ToString();
+    if (!string.IsNullOrWhiteSpace(referer))
+    {
+        return Uri.TryCreate(referer, UriKind.Absolute, out var refererUri) &&
+               IsRequestOrigin(context.Request, refererUri);
+    }
+
+    return true;
+}
+
+static bool IsRequestOrigin(HttpRequest request, Uri uri)
+{
+    if (IsSameOrigin(request.Scheme, request.Host.Host, request.Host.Port, uri))
     {
         return true;
     }
 
-    var label = AccountLabel(account);
-    Utility.WriteLine(ConsoleColor.Yellow, $"[{label}] 当前设备未绑定，正在发送短信验证码。");
-    if (!await api.GetSmsCodeAsync(account.User))
+    foreach (var origin in GetForwardedOrigins(request))
+    {
+        if (IsForwardedOrigin(uri, origin.Scheme, origin.Host, origin.Port))
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static bool IsSameOrigin(string scheme, string host, int? port, Uri uri)
+{
+    return string.Equals(scheme, uri.Scheme, StringComparison.OrdinalIgnoreCase) &&
+           string.Equals(host, uri.Host, StringComparison.OrdinalIgnoreCase) &&
+           GetPort(scheme, port) == GetPort(uri.Scheme, uri.IsDefaultPort ? null : uri.Port);
+}
+
+static bool IsForwardedOrigin(Uri requestOrigin, string scheme, string host, string port)
+{
+    if (string.IsNullOrWhiteSpace(scheme) || string.IsNullOrWhiteSpace(host))
     {
         return false;
     }
 
-    var verificationCode = ReadVerificationCode(account);
-    if (string.IsNullOrWhiteSpace(verificationCode))
+    var candidateHost = host;
+    if (!HasPort(candidateHost) &&
+        int.TryParse(port, NumberStyles.Integer, CultureInfo.InvariantCulture, out var forwardedPort))
     {
-        Utility.WriteLine(ConsoleColor.Red, $"[{label}] 未获取到短信验证码。");
-        return false;
+        candidateHost = candidateHost.StartsWith("[", StringComparison.Ordinal) || !candidateHost.Contains(':')
+            ? $"{candidateHost}:{forwardedPort}"
+            : $"[{candidateHost}]:{forwardedPort}";
     }
 
-    return await api.BindingDeviceAsync(verificationCode.Trim());
+    return Uri.TryCreate($"{scheme}://{candidateHost}", UriKind.Absolute, out var forwardedUri) &&
+           IsSameOrigin(forwardedUri.Scheme, forwardedUri.Host, forwardedUri.IsDefaultPort ? null : forwardedUri.Port, requestOrigin);
 }
 
-string ReadVerificationCode(AccountConfig account)
+static IEnumerable<(string Scheme, string Host, string Port)> GetForwardedOrigins(HttpRequest request)
 {
-    var label = AccountLabel(account);
-    if (!CanReadFromConsole())
+    foreach (var forwarded in SplitHeaderValues(request.Headers["Forwarded"]))
     {
-        Utility.WriteLine(ConsoleColor.Red, $"[{label}] 当前账号需要短信验证码，请使用 -it 交互模式重新运行并输入验证码。");
-        return "";
+        var scheme = GetForwardedParameter(forwarded, "proto");
+        var host = GetForwardedParameter(forwarded, "host");
+        if (!string.IsNullOrWhiteSpace(host))
+        {
+            yield return (scheme ?? request.Scheme, host, null);
+        }
     }
 
-    Console.Write($"[{label}] 短信验证码: ");
-    return Console.ReadLine();
-}
-
-async Task KeepAliveWorkerWithForcedReset(CtYunApi api, AccountConfig account, Desktop desktop, int keepAliveSeconds, CancellationToken globalToken)
-{
-    var label = AccountLabel(account);
-    var initialPayload = Convert.FromBase64String("UkVEUQIAAAACAAAAGgAAAAAAAAABAAEAAAABAAAAEgAAAAkAAAAECAAA");
-    var uri = new Uri($"wss://{desktop.DesktopInfo.ClinkLvsOutHost}/clinkProxy/{desktop.DesktopId}/MAIN");
-
-    while (!globalToken.IsCancellationRequested)
+    var forwardedHosts = SplitHeaderValues(request.Headers["X-Forwarded-Host"]);
+    if (forwardedHosts.Count == 0)
     {
-        using var sessionCts = CancellationTokenSource.CreateLinkedTokenSource(globalToken);
-        sessionCts.CancelAfter(TimeSpan.FromSeconds(keepAliveSeconds));
+        yield break;
+    }
 
-        using var client = new ClientWebSocket();
-        client.Options.SetRequestHeader("Origin", "https://pc.ctyun.cn");
-        client.Options.AddSubProtocol("binary");
+    var forwardedProtos = SplitHeaderValues(request.Headers["X-Forwarded-Proto"]);
+    var forwardedSchemes = SplitHeaderValues(request.Headers["X-Forwarded-Scheme"]);
+    var forwardedPorts = SplitHeaderValues(request.Headers["X-Forwarded-Port"]);
 
-        try
-        {
-            Utility.WriteLine(ConsoleColor.Cyan, $"[{label}][{desktop.DesktopCode}] === 新周期开始，尝试连接 ===");
-            await client.ConnectAsync(uri, sessionCts.Token);
-
-            var hostParts = desktop.DesktopInfo.ClinkLvsOutHost.Split(':', 2);
-            var connectMessage = new ConnecMessage
-            {
-                type = 1,
-                ssl = 1,
-                host = hostParts[0],
-                port = hostParts.Length > 1 ? hostParts[1] : "443",
-                ca = desktop.DesktopInfo.CaCert,
-                cert = desktop.DesktopInfo.ClientCert,
-                key = desktop.DesktopInfo.ClientKey,
-                servername = desktop.DesktopInfo.Host + ":" + desktop.DesktopInfo.Port,
-                oqs = 0
-            };
-
-            var msgBytes = JsonSerializer.SerializeToUtf8Bytes(connectMessage, AppJsonSerializerContext.Default.ConnecMessage);
-            await client.SendAsync(msgBytes, WebSocketMessageType.Text, true, sessionCts.Token);
-
-            await Task.Delay(500, sessionCts.Token);
-            await client.SendAsync(initialPayload, WebSocketMessageType.Binary, true, sessionCts.Token);
-
-            Utility.WriteLine(ConsoleColor.Green, $"[{label}][{desktop.DesktopCode}] 连接已就绪，保持 {keepAliveSeconds} 秒...");
-
-            try
-            {
-                await ReceiveLoop(api, client, account, desktop, sessionCts.Token);
-            }
-            catch (OperationCanceledException)
-            {
-                Utility.WriteLine(ConsoleColor.Yellow, $"[{label}][{desktop.DesktopCode}] 周期时间到，准备重连...");
-            }
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            Utility.WriteLine(ConsoleColor.Red, $"[{label}][{desktop.DesktopCode}] 异常: {ex.Message}");
-            await Task.Delay(5000, globalToken);
-        }
-        finally
-        {
-            if (client.State == WebSocketState.Open)
-            {
-                await client.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, "Timeout Reset", CancellationToken.None);
-            }
-        }
+    for (var i = 0; i < forwardedHosts.Count; i++)
+    {
+        var scheme = GetIndexedValue(forwardedProtos, i) ??
+                     GetIndexedValue(forwardedSchemes, i) ??
+                     request.Scheme;
+        yield return (scheme, forwardedHosts[i], GetIndexedValue(forwardedPorts, i));
     }
 }
 
-async Task ReceiveLoop(CtYunApi api, ClientWebSocket ws, AccountConfig account, Desktop desktop, CancellationToken ct)
+static List<string> SplitHeaderValues(Microsoft.Extensions.Primitives.StringValues values)
 {
-    var buffer = new byte[8192];
-    var encryptor = new Encryption();
-    var label = AccountLabel(account);
-
-    while (ws.State == WebSocketState.Open && !ct.IsCancellationRequested)
+    var result = new List<string>();
+    foreach (var value in values)
     {
-        var result = await ws.ReceiveAsync(new ArraySegment<byte>(buffer), ct);
-        if (result.MessageType == WebSocketMessageType.Close) break;
+        foreach (var part in value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            var clean = TrimForwardedValue(part);
+            if (!string.IsNullOrWhiteSpace(clean))
+            {
+                result.Add(clean);
+            }
+        }
+    }
 
-        if (result.Count == 0)
+    return result;
+}
+
+static string GetForwardedParameter(string forwarded, string name)
+{
+    foreach (var segment in forwarded.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+    {
+        var equalsIndex = segment.IndexOf('=');
+        if (equalsIndex <= 0)
         {
             continue;
         }
 
-        var data = buffer.AsSpan(0, result.Count).ToArray();
-        var hex = BitConverter.ToString(data).Replace("-", "");
-        if (hex.StartsWith("52454451", StringComparison.OrdinalIgnoreCase))
+        var parameterName = segment[..equalsIndex].Trim();
+        if (string.Equals(parameterName, name, StringComparison.OrdinalIgnoreCase))
         {
-            Utility.WriteLine(ConsoleColor.Green, $"[{label}][{desktop.DesktopCode}] -> 收到保活校验");
-            var response = encryptor.Execute(data);
-            await ws.SendAsync(response, WebSocketMessageType.Binary, true, ct);
-            Utility.WriteLine(ConsoleColor.DarkGreen, $"[{label}][{desktop.DesktopCode}] -> 发送保活响应成功");
-            continue;
-        }
-
-        try
-        {
-            var infos = SendInfo.FromBuffer(data);
-            foreach (var info in infos)
-            {
-                if (info.Type == 103)
-                {
-                    var payload = Encoding.UTF8.GetBytes("{\"type\":1,\"userName\":\"" + api.LoginInfo.UserName + "\",\"userInfo\":\"\",\"userId\":" + api.LoginInfo.UserId + "}");
-                    var byUserName = new SendInfo { Type = 118, Data = payload }.ToBuffer(true);
-                    await ws.SendAsync(byUserName, WebSocketMessageType.Binary, true, ct);
-                }
-            }
-        }
-        catch (Exception ex)
-        {
-            Utility.WriteLine(ConsoleColor.DarkYellow, $"[{label}][{desktop.DesktopCode}] 消息解析失败: {ex.Message}");
+            return TrimForwardedValue(segment[(equalsIndex + 1)..]);
         }
     }
+
+    return null;
 }
 
-RuntimeConfig LoadRuntimeConfig()
+static string GetIndexedValue(List<string> values, int index)
 {
-    var dataDir = GetDataDir();
-    Directory.CreateDirectory(dataDir);
-
-    var config = LoadAccountsFromFile(dataDir) ?? LoadAccountsFromEnvironment();
-    if (config == null || config.Accounts.Count == 0)
-    {
-        config = LoadAccountsFromConsole(dataDir);
-    }
-
-    foreach (var account in config.Accounts)
-    {
-        account.Name = FirstNotEmpty(account.Name, account.User);
-        account.DeviceCode = ResolveDeviceCode(account, dataDir);
-    }
-
-    return new RuntimeConfig(config.Accounts, Math.Max(10, config.KeepAliveSeconds), dataDir);
-}
-
-AppConfig LoadAccountsFromEnvironment()
-{
-    var user = Environment.GetEnvironmentVariable("APP_USER");
-    var password = Environment.GetEnvironmentVariable("APP_PASSWORD");
-    if (string.IsNullOrWhiteSpace(user) || string.IsNullOrWhiteSpace(password))
+    if (values.Count == 0)
     {
         return null;
     }
 
-    return new AppConfig
-    {
-        Accounts =
-        [
-            new AccountConfig
-            {
-                Name = Environment.GetEnvironmentVariable("APP_NAME"),
-                User = user,
-                Password = password,
-                DeviceCode = Environment.GetEnvironmentVariable("DEVICECODE")
-            }
-        ]
-    };
+    return index < values.Count ? values[index] : values[^1];
 }
 
-AppConfig LoadAccountsFromFile(string dataDir)
+static string TrimForwardedValue(string value)
 {
-    var configPath = Environment.GetEnvironmentVariable("CTYUN_CONFIG");
-    if (string.IsNullOrWhiteSpace(configPath))
-    {
-        configPath = Path.Combine(dataDir, "accounts.json");
-    }
-
-    if (!File.Exists(configPath))
-    {
-        return null;
-    }
-
-    try
-    {
-        var json = File.ReadAllText(configPath);
-        var config = JsonSerializer.Deserialize(json, AppJsonSerializerContext.Default.AppConfig);
-        Utility.WriteLine(ConsoleColor.Green, $"已读取配置文件：{configPath}");
-        return config;
-    }
-    catch (Exception ex)
-    {
-        Utility.WriteLine(ConsoleColor.Red, $"读取配置文件失败：{ex.Message}");
-        return null;
-    }
+    value = value.Trim();
+    return value.Length >= 2 && value[0] == '"' && value[^1] == '"'
+        ? value[1..^1]
+        : value;
 }
 
-AppConfig LoadAccountsFromConsole(string dataDir)
+static bool HasPort(string host)
 {
-    if (!CanReadFromConsole())
+    return Uri.TryCreate($"http://{host}", UriKind.Absolute, out var uri) && !uri.IsDefaultPort;
+}
+
+static int GetPort(string scheme, int? port)
+{
+    if (port.HasValue)
     {
-        return new AppConfig();
+        return port.Value;
     }
 
-    var accounts = new List<AccountConfig>();
-    while (true)
+    return string.Equals(scheme, "https", StringComparison.OrdinalIgnoreCase) ? 443 : 80;
+}
+
+static bool StringValuesContain(Microsoft.Extensions.Primitives.StringValues values, string expected)
+{
+    foreach (var value in values)
     {
-        Console.Write("账号: ");
-        var user = Console.ReadLine();
-        if (string.IsNullOrWhiteSpace(user))
+        if (string.Equals(value, expected, StringComparison.Ordinal))
         {
-            break;
-        }
-
-        Console.Write("密码: ");
-        var password = ReadPassword();
-        accounts.Add(new AccountConfig { Name = user, User = user, Password = password });
-
-        Console.Write("继续添加账号? (y/N): ");
-        var answer = Console.ReadLine();
-        if (!string.Equals(answer, "y", StringComparison.OrdinalIgnoreCase))
-        {
-            break;
+            return true;
         }
     }
 
-    if (accounts.Count > 0)
-    {
-        Utility.WriteLine(ConsoleColor.Yellow, $"交互输入模式已读取 {accounts.Count} 个账号。设备码会保存到 {Path.Combine(dataDir, "devices")}。");
-    }
-
-    return new AppConfig { Accounts = accounts };
+    return false;
 }
-
-string ResolveDeviceCode(AccountConfig account, string dataDir)
-{
-    if (!string.IsNullOrWhiteSpace(account.DeviceCode))
-    {
-        return account.DeviceCode.Trim();
-    }
-
-    var devicesDir = Path.Combine(dataDir, "devices");
-    Directory.CreateDirectory(devicesDir);
-    var deviceCodePath = Path.Combine(devicesDir, SafeName(account.Name ?? account.User) + ".txt");
-    if (!File.Exists(deviceCodePath))
-    {
-        File.WriteAllText(deviceCodePath, "web_" + GenerateRandomString(32));
-    }
-
-    return File.ReadAllText(deviceCodePath).Trim();
-}
-
-string GetDataDir()
-{
-    var dataDir = Environment.GetEnvironmentVariable("CTYUN_DATA_DIR");
-    if (!string.IsNullOrWhiteSpace(dataDir))
-    {
-        return dataDir;
-    }
-
-    return IsRunningInContainer() ? "/app/data" : AppContext.BaseDirectory;
-}
-
-static string GenerateRandomString(int length)
-{
-    const string chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
-    return new string(Enumerable.Repeat(chars, length).Select(s => s[RandomNumberGenerator.GetInt32(s.Length)]).ToArray());
-}
-
-static string ReadPassword()
-{
-    var sb = new StringBuilder();
-    while (true)
-    {
-        var key = Console.ReadKey(true);
-        if (key.Key == ConsoleKey.Enter)
-        {
-            Console.WriteLine();
-            return sb.ToString();
-        }
-
-        if (key.Key == ConsoleKey.Backspace && sb.Length > 0)
-        {
-            sb.Remove(sb.Length - 1, 1);
-            Console.Write("\b \b");
-        }
-        else if (!char.IsControl(key.KeyChar))
-        {
-            sb.Append(key.KeyChar);
-            Console.Write("*");
-        }
-    }
-}
-
-static string AccountLabel(AccountConfig account) => account.Name ?? account.User;
-
-static string SafeName(string value)
-{
-    var source = string.IsNullOrWhiteSpace(value) ? "default" : value;
-    var builder = new StringBuilder(source.Length);
-    foreach (var ch in source)
-    {
-        builder.Append(char.IsLetterOrDigit(ch) ? ch : '_');
-    }
-    return builder.ToString();
-}
-
-static string FirstNotEmpty(params string[] values) => values.FirstOrDefault(v => !string.IsNullOrWhiteSpace(v));
-
-static bool CanReadFromConsole() => !Console.IsInputRedirected && !Console.IsOutputRedirected;
-
-static bool IsRunningInContainer() => File.Exists("/.dockerenv");
-
-record RuntimeConfig(
-    List<AccountConfig> Accounts,
-    int KeepAliveSeconds,
-    string DataDir);

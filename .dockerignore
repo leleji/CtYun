@@ -1,0 +1,11 @@
+.git
+.github
+**/bin
+**/obj
+**/.vs
+**/.vscode
+ctyun-data
+publish
+*.user
+*.suo
+*.log

@@ -1,95 +1,54 @@
 # CtYun 云电脑保活
 
-CtYun 用于登录天翼云电脑并维持 WebSocket 保活连接。当前版本支持：
+CtYun 用于登录天翼云电脑并维持 WebSocket 保活连接。当前版本内置 Web 管理后台，Docker 启动后无需提前准备配置文件，也不需要 `-it` 交互输入。
 
-- 多账号同时登录和保活。
-- Windows/本机可执行文件：支持本地配置文件模式和交互输入模式。
-- Docker：支持挂载本地配置文件模式和 `-it` 交互输入模式。
-- 首次绑定设备需要短信验证码时，通过终端交互输入。
+## 功能
 
-## 配置文件模式
+- Docker 一键启动，首次打开后台即可配置账号。
+- 支持多账号保活，每个账号可接管多台云电脑。
+- 支持后台保存账号、密码、设备码和保活间隔。
+- 首次设备绑定可在后台发送短信验证码并完成绑定。
+- 后台展示运行状态、云电脑状态和最近运行日志。
+- 配置与设备码持久化在 `/app/data`，重建容器后无需重新绑定。
 
-程序默认在数据目录读取 `accounts.json`：
+## Zeabur 一键部署
 
-- 本机可执行文件：默认数据目录为程序所在目录。
-- Docker：默认数据目录为 `/app/data`，建议挂载到宿主机。
-- 也可以通过环境变量 `CTYUN_CONFIG` 指定配置文件路径。
-- 也可以通过环境变量 `CTYUN_DATA_DIR` 指定数据目录。
+本仓库已包含 Zeabur 部署所需的根目录 `Dockerfile` 和 `zeabur.yaml` 模板文件。
 
-`accounts.json` 示例：
+- 直接从 GitHub 部署：在 Zeabur 新建服务并选择本仓库，Zeabur 会自动识别根目录 `Dockerfile`，按 Docker 方式构建部署。
+- 发布为一键部署模板：登录 Zeabur 后执行 `npx zeabur@latest template create -f zeabur.yaml`，再到模板页面复制官方 Deploy 按钮到 README。
+- 模板默认使用镜像 `su3817807/ctyun:latest`，暴露 HTTP 端口 `8080`，并挂载 `/app/data` 做持久化存储。
 
-```json
-{
-  "keepAliveSeconds": 60,
-  "accounts": [
-    {
-      "name": "account-a",
-      "user": "你的账号1",
-      "password": "你的密码1",
-      "deviceCode": "web_自行生成的32位随机字符"
-    },
-    {
-      "name": "account-b",
-      "user": "你的账号2",
-      "password": "你的密码2"
-    }
-  ]
-}
-```
+部署完成后打开 Zeabur 分配的域名，在 Web 后台配置账号即可。
 
-`deviceCode` 可不填。程序会为每个账号自动生成设备码，并保存到 `devices/{账号名}.txt`。为了避免每次 Docker 重建镜像后重新绑定设备，务必持久化数据目录。
-
-Linux 生成设备码示例：
+## Docker Compose 一键部署
 
 ```bash
-echo "web_$(cat /dev/urandom | tr -dc 'a-zA-Z0-9' | fold -w 32 | head -n 1)"
+docker compose up -d
 ```
 
-## 本机运行
-
-把 `accounts.json` 放到程序目录后直接运行：
-
-```bash
-CtYun.exe
-```
-
-如果没有配置文件，也没有环境变量，程序会进入交互输入模式：
+启动后访问：
 
 ```text
-账号:
-密码:
-继续添加账号? (y/N):
+http://localhost:8080
 ```
 
-首次设备绑定时，程序会提示输入短信验证码。
+在后台完成以下步骤：
 
-## Docker 首次运行
+1. 使用初始管理员密码 `admin123` 登录，按页面提示先修改密码。
+2. 打开“账号配置”，填写账号、密码，设备码可留空。
+3. 点击“保存并重启”。
+4. 如果状态提示设备未绑定，点击“发送短信”，收到验证码后输入并点击“绑定设备”。
+5. 绑定成功后服务会重新加载配置并开始保活。
 
-准备宿主机配置目录：
-
-```bash
-mkdir -p ./ctyun-data
-```
-
-把 `accounts.json` 放到 `./ctyun-data/accounts.json`。首次运行建议使用 `-it`，方便输入短信验证码：
-
-```bash
-docker run -it --rm \
-  --name ctyun-init \
-  -v "$(pwd)/ctyun-data:/app/data" \
-  su3817807/ctyun:latest
-```
-
-看到保活任务启动后，说明设备码已经绑定成功。之后可以按 `Ctrl+C` 停止初始化容器，再改为后台运行。
-
-## Docker 后台运行
-
-设备绑定完成后使用：
+## Docker Run 部署
 
 ```bash
 docker run -d \
   --name ctyun \
-  -v "$(pwd)/ctyun-data:/app/data" \
+  --restart unless-stopped \
+  -p 8080:8080 \
+  -v ctyun-data:/app/data \
   su3817807/ctyun:latest
 ```
 
@@ -99,42 +58,67 @@ docker run -d \
 docker logs -f ctyun
 ```
 
-## 兼容旧环境变量模式
-
-单账号仍支持旧环境变量。首次绑定设备时同样使用 `-it` 输入短信验证码：
+## 本地构建镜像
 
 ```bash
-docker run -it --rm \
-  --name ctyun-init \
-  -v "$(pwd)/ctyun-data:/app/data" \
-  -e APP_USER="你的账号" \
-  -e APP_PASSWORD="你的密码" \
-  -e DEVICECODE="web_你的设备码" \
-  su3817807/ctyun:latest
+docker build -t ctyun:local .
+docker run -d --name ctyun -p 8080:8080 -v ctyun-data:/app/data ctyun:local
 ```
 
-绑定完成后改为后台运行：
+## 配置文件
 
-```bash
-docker run -d \
-  --name ctyun \
-  -v "$(pwd)/ctyun-data:/app/data" \
-  -e APP_USER="你的账号" \
-  -e APP_PASSWORD="你的密码" \
-  -e DEVICECODE="web_你的设备码" \
-  su3817807/ctyun:latest
-```
-
-建议新部署优先使用 `accounts.json`，多账号管理更清晰，也更适合 Docker 持久化。
-
-## 日志与保活
-
-程序会为每个账号、每台云电脑启动独立保活任务。日志格式会带上账号名和云电脑编号，便于区分：
+后台保存的配置文件默认位于数据目录：
 
 ```text
-[account-a][desktop-code] -> 收到保活校验
-[account-a][desktop-code] -> 发送保活响应成功
+/app/data/accounts.json
 ```
+
+也可以通过环境变量指定：
+
+- `CTYUN_DATA_DIR`：数据目录，Docker 默认 `/app/data`。
+- `CTYUN_CONFIG`：配置文件完整路径。
+- `CTYUN_CONFIG_KEY`：账号配置加密密钥。可填写 32 字节 Base64 值；未设置时会在数据目录生成 `config-encryption.key`。
+- `ADMIN_INITIAL_PASSWORD`：管理员后台初始密码，默认 `admin123`；首次登录后会强制修改。
+- `APP_USER` / `APP_PASSWORD` / `APP_NAME` / `DEVICECODE`：兼容旧版单账号环境变量，首次启动时会迁移为后台配置。
+
+管理员密码哈希保存到数据目录的 `admin-auth.json`，请和 `/app/data` 一起持久化保存。
+如果忘记管理员密码，可以停止服务后删除该文件并重启，系统会重新生成初始密码并再次要求首次修改。
+账号配置会以 AES-256-GCM 写入 `accounts.json`；旧版明文配置会在启动时自动迁移。请妥善保存 `CTYUN_CONFIG_KEY` 或数据目录中的 `config-encryption.key`，丢失后将无法解密已保存的账号配置。
+
+手动初始化时仍可使用旧版明文 `accounts.json`，程序首次启动后会自动迁移为加密格式。明文示例：
+
+```json
+{
+  "keepAliveSeconds": 60,
+  "accounts": [
+    {
+      "name": "main",
+      "user": "你的账号",
+      "password": "你的密码",
+      "deviceCode": "web_自动或手动生成的设备码"
+    }
+  ]
+}
+```
+
+`deviceCode` 可不填。程序会为每个账号自动生成设备码，并随账号配置一起加密保存。旧版本生成的 `devices/{账号名}.txt` 仍会被兼容读取并迁移。
+
+## 接口
+
+管理后台使用以下本地 API：
+
+- `GET /api/auth/status`：读取管理员登录状态。
+- `POST /api/auth/login`：管理员登录。
+- `POST /api/auth/change-password`：修改管理员密码。
+- `POST /api/auth/logout`：退出管理员登录。
+- `GET /api/status`：运行状态、账号状态、日志。
+- `GET /api/config`：读取脱敏配置。
+- `PUT /api/config`：保存配置并重启保活。
+- `POST /api/accounts/test-login`：测试账号登录。
+- `POST /api/accounts/send-sms`：发送设备绑定短信验证码。
+- `POST /api/accounts/bind-device`：提交短信验证码并绑定设备。
+- `POST /api/service/restart`：重启保活服务。
+- `POST /api/service/stop`：停止保活服务。
 
 ## 说明
 
